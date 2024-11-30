@@ -64,19 +64,21 @@ The server will start on `http://localhost:8000`
   ```
 
 ## Project Structure
+```
 project_root/
 ├── requirements.txt
 ├── src/
-│ ├── init.py
-│ ├── main.py
-│ ├── server.py
-│ ├── indexer/
-│ │ ├── init.py
-│ │ ├── web_indexer.py
-│ │ └── content_processor.py
-│ ├── rag/
-│ │ ├── init.py
-│ │ └── query_engine.py
-│ └── models/
-│ ├── init.py
-│ └── page_content.py
+│   ├── __init__.py
+│   ├── main.py
+│   ├── server.py
+│   ├── indexer/
+│   │   ├── __init__.py
+│   │   ├── web_indexer.py
+│   │   └── content_processor.py
+│   ├── rag/
+│   │   ├── __init__.py
+│   │   └── query_engine.py
+│   └── models/
+│       ├── __init__.py
+│       └── page_content.py
+```
