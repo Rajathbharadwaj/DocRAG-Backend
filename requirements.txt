@@ -1,0 +1,8 @@
+crawl4ai[all]
+chromadb
+tiktoken
+tqdm
+openai 
+langchain
+langchain-community
+langchain-openai
