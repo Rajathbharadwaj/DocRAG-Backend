@@ -5,7 +5,7 @@ import chromadb
 from chromadb.utils import embedding_functions
 from crawl4ai import AsyncWebCrawler
 from .content_processor import ContentProcessor
-from .models import PageContent
+from models import PageContent
 from tqdm import tqdm
 import asyncio
 

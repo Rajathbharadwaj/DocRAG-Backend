@@ -2,6 +2,7 @@ import tiktoken
 from typing import List, Optional
 import json
 from .models import PageContent
+from langchain_core.documents import Document
 
 class ContentProcessor:
     def chunk_text(self, text: str, chunk_size: int = 1000) -> List[str]:
@@ -27,6 +28,17 @@ class ContentProcessor:
             if not result:
                 return None
 
+            # Create LangChain Document
+            document = Document(
+                page_content=result.markdown,
+                metadata={
+                    'url': url,
+                    'title': result.title,
+                    'backlinks': backlinks_map.get(url, []),
+                    'media_references': result.media
+                }
+            )
+
             return PageContent(
                 url=url,
                 content=result.markdown,
@@ -37,23 +49,14 @@ class ContentProcessor:
                     'title': result.title,
                     'word_count': len(result.markdown.split()),
                     'link_count': len(result.links)
-                }
+                },
+                document=document  # Add document to PageContent
             )
 
         except Exception as e:
             return None
 
-    def store_in_vector_db(self, page_content: PageContent, collection):
-        chunks = self.chunk_text(page_content.content)
+    async def store_in_vector_db(self, page_content: PageContent, rag_engine):
+        """Store content using RAG engine instead of directly using collection"""
+        return await rag_engine.add_documents([page_content.document])
         
-        for i, chunk in enumerate(chunks):
-            collection.add(
-                documents=[chunk],
-                metadatas=[{
-                    'url': page_content.url,
-                    'chunk_index': i,
-                    'title': page_content.metadata['title'],
-                    'backlinks': json.dumps(page_content.backlinks)
-                }],
-                ids=[f"{page_content.url}_chunk_{i}"]
-            ) 

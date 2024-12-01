@@ -65,6 +65,7 @@ The server will start on `http://localhost:8000`
 
 ## Project Structure
 ```
+
 project_root/
 ├── requirements.txt
 ├── src/
