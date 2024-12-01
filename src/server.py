@@ -1,33 +1,68 @@
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
-from typing import Optional, Annotated
-from pydantic import BaseModel, HttpUrl, Field
+from pydantic import BaseModel, HttpUrl, Field, confloat, AnyHttpUrl
+from typing import Annotated, Optional  
 from indexer.web_indexer import WebIndexer
 from rag.query_engine import RAGQueryEngine
-from config import LLMProvider, settings
+from config import settings, LLMProvider
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_anthropic import ChatAnthropic
 
+# Global variables
+indexer: Optional[WebIndexer] = None
+rag_engine: Optional[RAGQueryEngine] = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
     global indexer, rag_engine
-    indexer = await WebIndexer().initialize_crawler()
-    rag_engine = RAGQueryEngine()
+    
+    # Initialize LLM based on default provider
+    if settings.default_provider == LLMProvider.ANTHROPIC:
+        llm = ChatAnthropic(
+            model=settings.anthropic_model,
+            temperature=settings.temperature,
+            anthropic_api_key=settings.anthropic_api_key
+        )
+    else:
+        llm = ChatOpenAI(
+            model=settings.openai_model,
+            temperature=settings.temperature,
+            api_key=settings.openai_api_key
+        )
+    
+    # Initialize embeddings
+    embeddings = OpenAIEmbeddings(
+        api_key=settings.openai_api_key
+    )
+    
+    # Initialize RAG engine
+    rag_engine = RAGQueryEngine(
+        llm=llm,
+        embeddings=embeddings,
+        vector_db_path=settings.vector_store_path
+    )
+    
+    # Initialize indexer with RAG engine
+    indexer = await WebIndexer(
+        max_depth=settings.max_depth,
+        backlink_threshold=settings.backlink_threshold,
+        rag_engine=rag_engine
+    ).initialize_crawler()
+    
     yield
+    
     # Shutdown
     if indexer:
         await indexer.cleanup()
 
+# Initialize FastAPI with lifespan
 app = FastAPI(lifespan=lifespan)
-indexer: Optional[WebIndexer] = None
-rag_engine: Optional[RAGQueryEngine] = None
 
 class URLInput(BaseModel):
-    url: HttpUrl
-    max_depth: Annotated[int, Field(default=2)] = 2
-    backlink_threshold: Annotated[float, Field(ge=0.0, le=1.0)] = 0.3
+    url: AnyHttpUrl
+    max_depth: int = Field(default=2, ge=1)
+    backlink_threshold: float = Field(default=0.3, ge=0.0, le=1.0)
     doc_name: str
 
 class QueryInput(BaseModel):
@@ -61,30 +96,39 @@ def get_llm(provider: LLMProvider):
 @app.post("/index_url")
 async def index_url(url_input: URLInput):
     """Process URL with custom crawling parameters."""
-    page_content = await indexer.process_initial_url(
-        url=str(url_input.url),
-        max_depth=url_input.max_depth,
-        backlink_threshold=url_input.backlink_threshold,
-        doc_name=url_input.doc_name
-    )
-    
-    if not page_content:
-        raise HTTPException(400, "Failed to process URL")
-    
-    return {
-        "status": "success",
-        "message": "Initial page processed, background indexing started",
-        "doc_name": url_input.doc_name,
-        "crawl_config": {
-            "max_depth": url_input.max_depth,
-            "backlink_threshold": url_input.backlink_threshold
-        },
-        "page_content": {
-            "title": page_content.metadata['title'],
-            "word_count": page_content.metadata['word_count'],
-            "initial_links_found": len(page_content.links)
+    try:
+        page_content = await indexer.process_initial_url(
+            url=str(url_input.url),
+            max_depth=url_input.max_depth,
+            backlink_threshold=url_input.backlink_threshold,
+            doc_name=url_input.doc_name
+        )
+        
+        if not page_content:
+            raise HTTPException(
+                status_code=400,
+                detail="Failed to process URL. Please check if the URL is accessible."
+            )
+        
+        return {
+            "status": "success",
+            "message": "Initial page processed, background indexing started",
+            "doc_name": url_input.doc_name,
+            "crawl_config": {
+                "max_depth": url_input.max_depth,
+                "backlink_threshold": url_input.backlink_threshold
+            },
+            "page_content": {
+                "title": page_content.metadata.get('title', 'No title'),
+                "word_count": page_content.metadata.get('word_count', 0),
+                "initial_links_found": len(page_content.links)
+            }
         }
-    }
+    except Exception as e:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Error processing URL: {str(e)}"
+        )
 
 @app.get("/indexing_status")
 async def get_status():
@@ -138,4 +182,4 @@ async def add_document(document: DocumentURL):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000) 
+    uvicorn.run("server:app", host="0.0.0.0", port=8000, reload=True) 
