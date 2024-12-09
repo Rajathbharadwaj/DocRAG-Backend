@@ -1,21 +1,26 @@
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel, HttpUrl, Field, confloat, AnyHttpUrl
-from typing import Annotated, Optional  
-from indexer.web_indexer import WebIndexer
+from fastapi import FastAPI, HTTPException, BackgroundTasks
+from pydantic import BaseModel, HttpUrl, Field
+from typing import Optional, List, Dict
+from indexer.content_processor import ContentProcessor
+from model.types import ContentType
+from model.config import ProcessingConfig
 from rag.query_engine import RAGQueryEngine
 from config import settings, LLMProvider
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_anthropic import ChatAnthropic
+import logging
+
+logger = logging.getLogger(__name__)
 
 # Global variables
-indexer: Optional[WebIndexer] = None
+content_processor: Optional[ContentProcessor] = None
 rag_engine: Optional[RAGQueryEngine] = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
-    global indexer, rag_engine
+    global content_processor, rag_engine
     
     # Initialize LLM based on default provider
     if settings.default_provider == LLMProvider.ANTHROPIC:
@@ -36,43 +41,38 @@ async def lifespan(app: FastAPI):
         api_key=settings.openai_api_key
     )
     
+    # Initialize content processor
+    content_processor = ContentProcessor()
+    
     # Initialize RAG engine
     rag_engine = RAGQueryEngine(
         llm=llm,
         embeddings=embeddings,
         vector_db_path=settings.vector_store_path
-    )
-    
-    # Initialize indexer with RAG engine
-    indexer = await WebIndexer(
-        max_depth=settings.max_depth,
-        backlink_threshold=settings.backlink_threshold,
-        rag_engine=rag_engine
-    ).initialize_crawler()
+    ).initialize()
     
     yield
     
-    # Shutdown
-    if indexer:
-        await indexer.cleanup()
+    # Cleanup
+    if rag_engine:
+        await rag_engine.cleanup()
 
 # Initialize FastAPI with lifespan
 app = FastAPI(lifespan=lifespan)
 
 class URLInput(BaseModel):
-    url: AnyHttpUrl
+    url: HttpUrl
+    content_type: Optional[ContentType] = None
     max_depth: int = Field(default=2, ge=1)
     backlink_threshold: float = Field(default=0.3, ge=0.0, le=1.0)
     doc_name: str
-
-class QueryInput(BaseModel):
-    question: str
 
 class RAGRequest(BaseModel):
     question: str
     thread_id: str = "default"
     llm_provider: LLMProvider = LLMProvider.ANTHROPIC
     return_sources: bool = False
+    content_filter: Optional[List[ContentType]] = None
 
 def get_llm(provider: LLMProvider):
     """Get LLM based on provider choice"""
@@ -94,92 +94,90 @@ def get_llm(provider: LLMProvider):
         raise HTTPException(400, f"Unsupported LLM provider: {provider}")
 
 @app.post("/index_url")
-async def index_url(url_input: URLInput):
-    """Process URL with custom crawling parameters."""
+async def index_url(url_input: URLInput, background_tasks: BackgroundTasks):
+    """Process URL with content type detection and custom parameters"""
     try:
-        page_content = await indexer.process_initial_url(
+        # Process initial URL
+        content = await content_processor.process_url(
             url=str(url_input.url),
-            max_depth=url_input.max_depth,
-            backlink_threshold=url_input.backlink_threshold,
-            doc_name=url_input.doc_name
+            content_type=url_input.content_type
         )
         
-        if not page_content:
+        if not content:
             raise HTTPException(
                 status_code=400,
                 detail="Failed to process URL. Please check if the URL is accessible."
             )
         
+        # Add to RAG engine
+        await rag_engine.add_content(
+            content=content,
+            doc_name=url_input.doc_name
+        )
+        
+        # Schedule background crawling if depth > 1
+        if url_input.max_depth > 1:
+            background_tasks.add_task(
+                rag_engine.crawl_links,
+                start_url=str(url_input.url),
+                max_depth=url_input.max_depth,
+                backlink_threshold=url_input.backlink_threshold,
+                doc_name=url_input.doc_name
+            )
+        
         return {
             "status": "success",
             "message": "Initial page processed, background indexing started",
+            "content_type": content.content_type.value,
             "doc_name": url_input.doc_name,
             "crawl_config": {
                 "max_depth": url_input.max_depth,
                 "backlink_threshold": url_input.backlink_threshold
-            },
-            "page_content": {
-                "title": page_content.metadata.get('title', 'No title'),
-                "word_count": page_content.metadata.get('word_count', 0),
-                "initial_links_found": len(page_content.links)
             }
         }
     except Exception as e:
+        logger.error(f"Error processing URL: {str(e)}")
         raise HTTPException(
             status_code=400,
             detail=f"Error processing URL: {str(e)}"
         )
 
-@app.get("/indexing_status")
-async def get_status():
-    """Get the current status of background indexing."""
-    return indexer.get_indexing_status()
+@app.get("/indexing_status/{doc_name}")
+async def get_status(doc_name: str):
+    """Get the current status of background indexing for a document"""
+    return await rag_engine.get_indexing_status(doc_name)
 
 @app.post("/query")
 async def query(request: RAGRequest):
-    """Query endpoint that accepts LLM provider choice"""
+    """Query endpoint with content type filtering"""
     try:
         llm = get_llm(request.llm_provider)
-        embeddings = OpenAIEmbeddings(api_key=settings.openai_api_key)
-        
-        rag_engine = RAGQueryEngine(
-            llm=llm,
-            embeddings=embeddings,
-            vector_db_path=settings.vector_store_path
-        )
         
         response = await rag_engine.query(
             question=request.question,
             thread_id=request.thread_id,
-            return_sources=request.return_sources
+            return_sources=request.return_sources,
+            content_filter=request.content_filter
         )
         
-        return {
-            "provider": request.llm_provider,
-            **response
-        }
+        if request.return_sources:
+            return {
+                "provider": request.llm_provider,
+                **response
+            }
+        else:
+            return {
+                "provider": request.llm_provider,
+                "answer": response["answer"]
+            }
+            
     except Exception as e:
-        raise HTTPException(500, str(e))
-
-class DocumentURL(BaseModel):
-    url: HttpUrl
-    doc_name: str
-
-@app.post("/api/documents")
-async def add_document(document: DocumentURL):
-    try:
-        # Here you would add logic to:
-        # 1. Download the document from the URL
-        # 2. Process it
-        # 3. Store it with the given doc_name
-        return {
-            "status": "success",
-            "message": f"Document '{document.doc_name}' successfully added",
-            "url": str(document.url)
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Error in query endpoint: {str(e)}")
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Error processing query: {str(e)}"
+        )
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("server:app", host="0.0.0.0", port=8000, reload=True) 
+    uvicorn.run("server:app", host="0.0.0.0", port=8000, reload=True)

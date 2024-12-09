@@ -6,12 +6,12 @@ with open("README.md", "r", encoding="utf-8") as fh:
 setup(
     name="web-indexer",
     version="0.1.0",
-    author="Your Name",
-    author_email="your.email@example.com",
+    author="Rajath",
+    author_email="rajath@docrag.io",
     description="A web indexing and RAG system built with LangChain",
     long_description=long_description,
     long_description_content_type="text/markdown",
-    url="https://github.com/yourusername/web-indexer",
+    url="https://github.com/rajath-com/web-indexer",
     packages=find_packages(where="src"),
     package_dir={"": "src"},
     classifiers=[

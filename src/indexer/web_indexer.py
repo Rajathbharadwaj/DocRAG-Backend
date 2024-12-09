@@ -4,8 +4,9 @@ from urllib.parse import urlparse
 import chromadb
 from chromadb.utils import embedding_functions
 from crawl4ai import AsyncWebCrawler
+from model.types import ContentType
 from .content_processor import ContentProcessor
-from models import PageContent
+from model.content import PageContent
 from tqdm import tqdm
 import asyncio
 
@@ -60,12 +61,10 @@ class WebIndexer:
 
     async def process_initial_url(self, 
                                 url: str,
+                                content_type: Optional[ContentType] = None,
                                 max_depth: Optional[int] = None,
-                                backlink_threshold: Optional[float] = None,
-                                doc_name: Optional[str] = None) -> Optional[PageContent]:
+                                backlink_threshold: Optional[float] = None) -> Optional[PageContent]:
         """Process the main URL immediately and start background processing."""
-        print(f"\n[DEBUG] Starting to process URL: {url}")
-        
         try:
             # Override instance values if provided
             if max_depth is not None:
@@ -73,51 +72,45 @@ class WebIndexer:
             if backlink_threshold is not None:
                 self.backlink_threshold = backlink_threshold
             
-            print(f"[DEBUG] Calling content processor for URL: {url}")
-            page_content = await self.content_processor.extract_page_content(
+            # Process URL with content type detection
+            page_content = await self.content_processor.process_url(
                 url=url,
-                crawler=self.crawler,  # Now using self.crawler
+                content_type=content_type,
                 backlinks_map=self.backlinks_map
             )
             
             if page_content:
-                print(f"[DEBUG] Successfully extracted content from {url}")
                 # Store in vector DB
-                if self.rag_engine:
-                    print("[DEBUG] Adding documents to RAG engine")
-                    await self.rag_engine.add_documents([page_content.document])
+                if self.rag_engine and page_content.documents:
+                    await self.rag_engine.add_documents(page_content.documents)
                 
+                # Update tracking
                 self.visited_urls.add(url)
                 self.url_queue.update(page_content.links)
-                print(f"[DEBUG] Found {len(page_content.links)} links to process")
                 
-                # Update backlinks map with the current page's outgoing links
+                # Update backlinks map
                 for link in page_content.links:
                     if link not in self.backlinks_map:
                         self.backlinks_map[link] = set()
-                    self.backlinks_map[link].add(url)  # Current page links to 'link'
-                
-                print(f"[DEBUG] Updated backlinks map: {self.backlinks_map}")
+                    self.backlinks_map[link].add(url)
                 
                 # Start background processing
-                print("[DEBUG] Starting background processing")
                 self.background_task = asyncio.create_task(
-                    self._process_backlinks_async(doc_name or "default")
+                    self._process_backlinks_async()
                 )
                 
                 return page_content
-            else:
-                print(f"[DEBUG] Failed to extract content from {url}")
-                return None
-                
+            
+            return None
+            
         except Exception as e:
-            print(f"[DEBUG] Error processing URL: {str(e)}")
+            self.logger.error(f"Error processing URL: {str(e)}")
             raise
 
-    async def _process_backlinks_async(self, doc_name: str):
+    async def _process_backlinks_async(self):
         """Process remaining URLs in background."""
         try:
-            print(f"[DEBUG] Starting background processing for {doc_name}")
+            print(f"[DEBUG] Starting background processing")
             print(f"[DEBUG] Initial queue size: {len(self.url_queue)}")
             print(f"[DEBUG] URLs in queue: {self.url_queue}")
             
@@ -127,6 +120,8 @@ class WebIndexer:
                 urls_at_depth = self.url_queue.copy()
                 self.url_queue.clear()
                 
+                # Filter URLs based on backlink threshold
+                urls_to_process = []
                 for url in urls_at_depth:
                     if url in self.visited_urls:
                         print(f"[DEBUG] Skipping already visited URL: {url}")
@@ -134,31 +129,46 @@ class WebIndexer:
                         
                     # Check backlink threshold
                     backlink_count = len(self.backlinks_map.get(url, set()))
-                    print(f"[DEBUG] URL {url} has {backlink_count} backlinks")
-                    if backlink_count / len(self.visited_urls) < self.backlink_threshold:
+                    if backlink_count / len(self.visited_urls) >= self.backlink_threshold:
+                        urls_to_process.append(url)
+                    else:
                         print(f"[DEBUG] URL {url} below backlink threshold")
-                        continue
-                    
-                    print(f"[DEBUG] Processing URL: {url}")
-                    page_content = await self.content_processor.extract_page_content(
-                        url=url,
-                        crawler=self.crawler,
-                        backlinks_map=self.backlinks_map
+                
+                # Process filtered URLs in parallel
+                async def process_single_url(url):
+                    try:
+                        print(f"[DEBUG] Processing URL: {url}")
+                        page_content = await self.content_processor.extract_page_content(
+                            url=url,
+                            crawler=self.crawler,
+                            backlinks_map=self.backlinks_map
+                        )
+                        
+                        if page_content and self.rag_engine:
+                            await self.rag_engine.add_documents([page_content.document])
+                            self.visited_urls.add(url)
+                            self.url_queue.update(page_content.links)
+                            
+                            # Update backlinks
+                            for link in page_content.links:
+                                if link not in self.backlinks_map:
+                                    self.backlinks_map[link] = set()
+                                self.backlinks_map[link].add(url)
+                        
+                        return page_content
+                    except Exception as e:
+                        print(f"[DEBUG] Error processing URL {url}: {str(e)}")
+                        return None
+                
+                # Process URLs concurrently with a reasonable chunk size
+                chunk_size = 5  # Adjust based on your needs
+                for i in range(0, len(urls_to_process), chunk_size):
+                    chunk = urls_to_process[i:i + chunk_size]
+                    results = await asyncio.gather(
+                        *[process_single_url(url) for url in chunk],
+                        return_exceptions=True
                     )
-                    
-                    if page_content and self.rag_engine:
-                        await self.rag_engine.add_documents([page_content.document])
-                        self.visited_urls.add(url)
-                        self.url_queue.update(page_content.links)
-                        print(f"[DEBUG] Added {len(page_content.links)} new URLs to queue")
-                
-                    # Update backlinks for newly discovered links
-                    for link in page_content.links:
-                        if link not in self.backlinks_map:
-                            self.backlinks_map[link] = set()
-                        self.backlinks_map[link].add(url)
-                
-                    print(f"[DEBUG] Current backlinks map: {self.backlinks_map}")
+                    print(f"[DEBUG] Processed batch of {len(chunk)} URLs")
                 
                 current_depth += 1
                 
