@@ -5,3 +5,6 @@ class ContentType(Enum):
     DOCUMENTATION = "documentation"
     MEDIA = "media"
     ACADEMIC = "academic" 
+    GITHUB = "github"
+    STACKOVERFLOW = "stackoverflow"
+    API = "api"

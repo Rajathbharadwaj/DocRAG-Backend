@@ -6,8 +6,7 @@ from crawl4ai import CrawlResult, AsyncWebCrawler
 from crawl4ai.extraction_strategy import LLMExtractionStrategy
 from crawl4ai.chunking_strategy import TopicSegmentationChunking
 import logging
-from ...model.types import ContentType
-from ...model.content import PageContent
+
 
 logger = logging.getLogger(__name__)
 

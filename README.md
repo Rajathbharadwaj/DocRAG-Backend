@@ -4,12 +4,12 @@ A high-performance multi-document RAG system. Your one stop place for all your d
 
 ## Features
 
-### Specialized Content Extractors
-- **Code Documentation**: Processes code docs, tutorials, and technical guides
-- **API Documentation**: Handles API references, endpoints, and requests
-- **Academic Papers**: Processes research papers and technical publications
-- **GitHub Content**: Specialized for READMEs, Issues, PRs, and Discussions
-- **StackOverflow**: Optimized for questions, answers, and technical discussions
+### Content Type Support
+- `ContentType.DOCUMENTATION`: Code docs, tutorials, and technical guides
+- `ContentType.API`: API references, endpoints, and requests
+- `ContentType.ACADEMIC`: Research papers and technical publications
+- `ContentType.GITHUB`: READMEs, Issues, PRs, and Discussions
+- `ContentType.STACKOVERFLOW`: Questions, answers, and technical discussions
 
 ### Performance Optimizations
 - Parallel processing with batched operations
@@ -17,12 +17,6 @@ A high-performance multi-document RAG system. Your one stop place for all your d
 - Efficient content chunking
 - Optimized backlink processing
 - Concurrent URL crawling
-
-### Key Components
-- **WebIndexer**: Main indexing engine
-- **ContentProcessor**: Smart content type detection and routing
-- **Specialized Extractors**: Type-specific content processing
-- **RAG Integration**: Vector database storage for processed content
 
 ## Installation
 
@@ -33,69 +27,43 @@ pip install crawl4ai
 ## Quick Start
 
 ```python
-from indexer import WebIndexer
+from indexer import WebIndexer, ContentType
 
 # Initialize indexer
 indexer = await WebIndexer().initialize_crawler()
 
 # Process a URL
 result = await indexer.process_initial_url(
-    "https://example.com/docs",
+    url="https://example.com/docs",
+    content_type=ContentType.DOCUMENTATION,
     max_depth=2
 )
 ```
 
 ## Configuration
 
-### Crawler Settings
-```python
-crawler_config = {
-    'headless': True,
-    'browser_type': 'chromium',
-    'page_timeout': 60000,
-    'word_count_threshold': 10,
-    'remove_overlay_elements': True
-}
-```
-
 ### Processing Options
+- `url`: Target URL to process
+- `content_type`: Specific ContentType enum value
 - `max_depth`: Maximum crawling depth (default: 2)
 - `backlink_threshold`: Minimum backlink ratio (default: 0.3)
-- `batch_size`: URLs processed in parallel (default: 10)
 
-## Content Processing
+### Content Types
+```python
+from indexer import ContentType
 
-### Supported Content Types
-1. Code Documentation
-   - Technical guides
-   - Library documentation
-   - Implementation examples
+# Available content types
+ContentType.DOCUMENTATION  # Code docs and guides
+ContentType.API           # API documentation
+ContentType.ACADEMIC      # Research papers
+ContentType.GITHUB        # GitHub content
+ContentType.STACKOVERFLOW # StackOverflow content
+```
 
-2. API Documentation
-   - Endpoint descriptions
-   - Request/response formats
-   - Authentication details
-
-3. Academic Content
-   - Research papers
-   - Technical publications
-   - Mathematical content
-
-4. GitHub Content
-   - READMEs
-   - Issues and PRs
-   - Discussions
-   - Repository metadata
-
-5. StackOverflow Content
-   - Questions and answers
-   - Code examples
-   - Technical discussions
-
-### Processing Pipeline
-1. Content type detection
-2. Specialized extraction
-3. Batch processing
+## Processing Pipeline
+1. URL submission with content type
+2. Specialized content extraction
+3. Batch processing of related URLs
 4. Vector storage
 5. Backlink management
 

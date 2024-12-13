@@ -13,13 +13,12 @@ from model.types import ContentType
 # These relative imports are fine since they're in the same package
 from .base import BaseExtractor
 from .code import CodeDocumentationExtractor
-from .article import ArticleExtractor
+
 from .academic import AcademicExtractor
 from .media import MediaRichExtractor
 
 __all__ = [
     'CodeDocumentationExtractor',
-    'ArticleExtractor',
     'AcademicExtractor',
     'MediaRichExtractor'
 ]

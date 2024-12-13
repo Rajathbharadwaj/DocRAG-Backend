@@ -1,6 +1,8 @@
 from typing import List, Optional
 from langchain_core.documents import Document
 from crawl4ai import CrawlResult
+
+from model.types import ContentType
 from .extractors.code import CodeDocumentationExtractor
 from .extractors.api import APIDocumentationExtractor
 from .extractors.academic import AcademicExtractor
@@ -14,25 +16,25 @@ logger = logging.getLogger(__name__)
 class ContentProcessor:
     def __init__(self):
         self.extractors = {
-            'code': CodeDocumentationExtractor(),
-            'api': APIDocumentationExtractor(),
-            'academic': AcademicExtractor(),
-            'github': GitHubExtractor(),
-            'stackoverflow': StackOverflowExtractor()
+            ContentType.DOCUMENTATION: CodeDocumentationExtractor(),
+            ContentType.API: APIDocumentationExtractor(),
+            ContentType.ACADEMIC: AcademicExtractor(),
+            ContentType.GITHUB: GitHubExtractor(),
+            ContentType.STACKOVERFLOW: StackOverflowExtractor()
         }
 
-    def _detect_content_type(self, result: CrawlResult) -> str:
+    def _detect_content_type(self, result: CrawlResult) -> ContentType:
         """Detect the type of content based on URL and content patterns"""
         url = result.url.lower()
         content = result.markdown_v2.raw_markdown.lower()
 
         # GitHub detection
         if 'github.com' in url:
-            return 'github'
+            return ContentType.GITHUB
 
         # StackOverflow detection
         if 'stackoverflow.com' in url:
-            return 'stackoverflow'
+            return ContentType.STACKOVERFLOW
 
         # API documentation detection
         api_patterns = [
@@ -44,7 +46,7 @@ class ContentProcessor:
             r'graphql.*api'
         ]
         if any(re.search(pattern, content) for pattern in api_patterns):
-            return 'api'
+            return ContentType.API
 
         # Academic paper detection
         academic_patterns = [
@@ -55,16 +57,18 @@ class ContentProcessor:
             r'arxiv'
         ]
         if any(re.search(pattern, content) for pattern in academic_patterns):
-            return 'academic'
+            return ContentType.ACADEMIC
 
         # Default to code documentation
-        return 'code'
+        return ContentType.DOCUMENTATION
 
-    async def process(self, result: CrawlResult) -> List[Document]:
+    async def process(self, result: CrawlResult, content_type: Optional[ContentType] = None) -> List[Document]:
         """Process content using appropriate extractor"""
         try:
             # Detect content type
-            content_type = self._detect_content_type(result)
+            
+            if not content_type:
+                content_type = self._detect_content_type(result)
             logger.info(f"Detected content type: {content_type} for URL: {result.url}")
 
             # Get appropriate extractor

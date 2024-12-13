@@ -62,6 +62,7 @@ class WebIndexer:
                                 url: str,
                                 content_type: Optional[ContentType] = None,
                                 max_depth: Optional[int] = None,
+                                max_links: Optional[int] = None,
                                 backlink_threshold: Optional[float] = None) -> Optional[PageContent]:
         """Process the main URL and start background processing"""
         try:
@@ -69,22 +70,33 @@ class WebIndexer:
                 self.max_depth = max_depth
             if backlink_threshold is not None:
                 self.backlink_threshold = backlink_threshold
+            self.max_links = max_links
             
             # Crawl and process URL
-            crawl_result = await self.crawler.crawl(url)
-            documents = await self.content_processor.process(crawl_result)
+            async with self.crawler as crawler:
+                crawl_result = await crawler.arun(
+                    url=url,
+                    clean_content=True,
+                    bypass_cache=True
+                )
+            documents = await self.content_processor.process(crawl_result, content_type)
             
             if documents:
+                # Limit number of links if max_links is set
+                links_to_process = crawl_result.links
+                if self.max_links:
+                    links_to_process = list(links_to_process)[:self.max_links]
+                
                 # Store in vector DB
                 if self.rag_engine:
                     await self.rag_engine.add_documents(documents)
                 
-                # Update tracking
+                # Update tracking with limited links
                 self.visited_urls.add(url)
-                self.url_queue.update(crawl_result.links)
+                self.url_queue.update(links_to_process)
                 
-                # Update backlinks
-                for link in crawl_result.links:
+                # Update backlinks for limited set
+                for link in links_to_process:
                     if link not in self.backlinks_map:
                         self.backlinks_map[link] = set()
                     self.backlinks_map[link].add(url)
@@ -97,7 +109,7 @@ class WebIndexer:
                 return PageContent(
                     url=url,
                     documents=documents,
-                    links=crawl_result.links
+                    links=links_to_process
                 )
             
             return None
@@ -131,8 +143,9 @@ class WebIndexer:
                     print(f"[DEBUG] Processing batch {i//batch_size + 1} of {(len(urls_to_process) + batch_size - 1)//batch_size}")
                     
                     # Crawl all URLs in batch
-                    crawl_tasks = [self.crawler.crawl(url) for url in batch]
-                    crawl_results = await asyncio.gather(*crawl_tasks)
+                    async with self.crawler as crawler:
+                        crawl_tasks = [crawler.arun(url, clean_content=True, bypass_cache=True) for url in batch]
+                        crawl_results = await asyncio.gather(*crawl_tasks)
                     
                     # Process all results in batch
                     process_tasks = [
