@@ -10,17 +10,15 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-class AcademicExtractor(BaseExtractor):
+class GitHubExtractor(BaseExtractor):
     def __init__(self):
         super().__init__()
-        # Use faster model with optimized settings
         self.llm = ChatOpenAI(
             model="gpt-4o-mini",
             temperature=0,
             max_retries=1,
         )
         
-        # Optimize chunk settings
         self.chunk_size = 16000
         self.chunk_overlap = 200
         
@@ -32,59 +30,69 @@ class AcademicExtractor(BaseExtractor):
         )
         
         self.preprocess_prompt = ChatPromptTemplate.from_messages([
-            ("system", """You are an academic paper preprocessing expert. Transform academic content into a clear, structured format.
+            ("system", """You are a GitHub content preprocessing expert. Your task is to parse and transform raw markdown documentation into LLM-friendly format.
 
 PREPROCESSING REQUIREMENTS:
 
-1. PAPER STRUCTURE
-   - Abstract → Introduction → Methods → Results → Discussion → Conclusion
-   - Add missing section headers where needed
-   - Split run-on sections appropriately
+1. README FORMATTING
+   - Structure project overview clearly
+   - Format installation steps
+   - Highlight key features
+   - Structure usage examples
+   - Format badges and shields
 
-2. TECHNICAL CONTENT
-   - Format mathematical equations using proper markdown
-   - Convert inline equations to $equation$ format
-   - Convert block equations to $$equation$$ format
-   - Preserve statistical notations and symbols
-
-3. FIGURE & TABLE HANDLING
-   - Convert figure captions to structured format:
-     ```figure
-     Caption: [caption text]
-     Description: [detailed description]
-     Key Findings: [main points from figure]
+2. ISSUE/PR FORMATTING
+   - Format issue templates
+   - Structure bug reports:
+     ```bug-report
+     Description: [what happened]
+     Expected: [what should happen]
+     Steps: [reproduction steps]
+     Environment: [relevant details]
      ```
-   - Format tables with proper markdown syntax
-   - Include table headers and descriptions
+   - Format feature requests
+   - Preserve PR descriptions and changes
 
-4. CITATIONS & REFERENCES
-   - Convert citations to consistent format [Author, Year]
-   - Format reference list entries consistently
-   - Preserve DOIs and links
-   - Add section breaks between references
+3. CODE BLOCKS
+   - Add language identifiers
+   - Format shell commands:
+     ```bash
+     $ command --flag
+     ```
+   - Format config files with appropriate tags
+   - Show output examples
+   - Include comments
 
-5. RESULTS PRESENTATION
-   - Format statistical results consistently (p-values, test statistics)
-   - Structure methodology steps clearly
-   - Present experimental conditions in tables where appropriate
-   - Format data ranges and uncertainties consistently
+4. DISCUSSIONS/COMMENTS
+   - Preserve thread structure
+   - Format code snippets in comments
+   - Handle quoted text properly
+   - Maintain @mentions
+   - Format links to issues/PRs
+
+5. REPOSITORY METADATA
+   - Format version information
+   - Structure dependency lists
+   - Format compatibility tables
+   - Handle license information
+   - Format contributor guidelines
 
 6. STANDARDIZATION
    - Convert all headers to markdown syntax
-   - Add proper code block language identifiers
-   - Format lists consistently
-   - Preserve technical accuracy
-   - Remove HTML formatting
+   - Format task lists [ ] correctly
+   - Handle emoji shortcodes
+   - Preserve GitHub-specific references
    - Clean up whitespace
+   - Remove HTML when possible
 
-Transform the following academic content:"""),
+Transform the following GitHub content:"""),
             ("human", "{content}")
         ])
 
     async def extract(self, result: CrawlResult) -> List[Document]:
         try:
             content = result.markdown_v2.raw_markdown
-            print(f"Processing academic document with {len(content)} characters...")
+            print(f"Processing GitHub content with {len(content)} characters...")
             
             chunks = self.text_splitter.split_text(content)
             print(f"Split into {len(chunks)} chunks for parallel processing")
@@ -118,7 +126,7 @@ Transform the following academic content:"""),
                 page_content=processed_content,
                 metadata={
                     'url': result.url,
-                    'type': 'academic_paper',
+                    'type': 'github_content',
                     'original_size': len(content),
                     'processed_size': len(processed_content)
                 }

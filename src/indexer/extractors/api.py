@@ -10,7 +10,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-class AcademicExtractor(BaseExtractor):
+class APIDocumentationExtractor(BaseExtractor):
     def __init__(self):
         super().__init__()
         # Use faster model with optimized settings
@@ -32,59 +32,60 @@ class AcademicExtractor(BaseExtractor):
         )
         
         self.preprocess_prompt = ChatPromptTemplate.from_messages([
-            ("system", """You are an academic paper preprocessing expert. Transform academic content into a clear, structured format.
+            ("system", """You are an API documentation preprocessing expert. Your task is to parse and transform raw markdown documentation into LLM-friendly format.
 
 PREPROCESSING REQUIREMENTS:
 
-1. PAPER STRUCTURE
-   - Abstract → Introduction → Methods → Results → Discussion → Conclusion
-   - Add missing section headers where needed
-   - Split run-on sections appropriately
+1. ENDPOINT DOCUMENTATION
+   - Format HTTP methods prominently (GET, POST, PUT, DELETE)
+   - Structure URL paths consistently
+   - Highlight path parameters
+   - Format query parameters in tables
 
-2. TECHNICAL CONTENT
-   - Format mathematical equations using proper markdown
-   - Convert inline equations to $equation$ format
-   - Convert block equations to $$equation$$ format
-   - Preserve statistical notations and symbols
+2. REQUEST/RESPONSE FORMATTING
+   - Format JSON examples with proper syntax highlighting
+   ```json
+   {
+     "key": "value"
+   }
+   ```
+   - Include sample requests with curl commands
+   - Show response status codes and meanings
+   - Format headers consistently
 
-3. FIGURE & TABLE HANDLING
-   - Convert figure captions to structured format:
-     ```figure
-     Caption: [caption text]
-     Description: [detailed description]
-     Key Findings: [main points from figure]
-     ```
-   - Format tables with proper markdown syntax
-   - Include table headers and descriptions
+3. PARAMETER DOCUMENTATION
+   - Create consistent parameter tables:
+   | Parameter | Type | Required | Description |
+   |-----------|------|----------|-------------|
+   | param1    | string| Yes     | Description |
 
-4. CITATIONS & REFERENCES
-   - Convert citations to consistent format [Author, Year]
-   - Format reference list entries consistently
-   - Preserve DOIs and links
-   - Add section breaks between references
+4. AUTHENTICATION
+   - Highlight authentication methods
+   - Show token/key placement
+   - Include security warnings
+   - Format auth headers
 
-5. RESULTS PRESENTATION
-   - Format statistical results consistently (p-values, test statistics)
-   - Structure methodology steps clearly
-   - Present experimental conditions in tables where appropriate
-   - Format data ranges and uncertainties consistently
+5. ERROR HANDLING
+   - List possible error codes
+   - Show error response formats
+   - Include troubleshooting tips
+   - Format error examples
 
 6. STANDARDIZATION
    - Convert all headers to markdown syntax
    - Add proper code block language identifiers
-   - Format lists consistently
-   - Preserve technical accuracy
-   - Remove HTML formatting
+   - Format all examples consistently
    - Clean up whitespace
+   - Remove HTML formatting
 
-Transform the following academic content:"""),
+Transform the following API documentation:"""),
             ("human", "{content}")
         ])
 
     async def extract(self, result: CrawlResult) -> List[Document]:
         try:
             content = result.markdown_v2.raw_markdown
-            print(f"Processing academic document with {len(content)} characters...")
+            print(f"Processing API documentation with {len(content)} characters...")
             
             chunks = self.text_splitter.split_text(content)
             print(f"Split into {len(chunks)} chunks for parallel processing")
@@ -118,7 +119,7 @@ Transform the following academic content:"""),
                 page_content=processed_content,
                 metadata={
                     'url': result.url,
-                    'type': 'academic_paper',
+                    'type': 'api_documentation',
                     'original_size': len(content),
                     'processed_size': len(processed_content)
                 }

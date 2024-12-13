@@ -10,17 +10,15 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-class AcademicExtractor(BaseExtractor):
+class StackOverflowExtractor(BaseExtractor):
     def __init__(self):
         super().__init__()
-        # Use faster model with optimized settings
         self.llm = ChatOpenAI(
             model="gpt-4o-mini",
             temperature=0,
             max_retries=1,
         )
         
-        # Optimize chunk settings
         self.chunk_size = 16000
         self.chunk_overlap = 200
         
@@ -32,59 +30,101 @@ class AcademicExtractor(BaseExtractor):
         )
         
         self.preprocess_prompt = ChatPromptTemplate.from_messages([
-            ("system", """You are an academic paper preprocessing expert. Transform academic content into a clear, structured format.
+            ("system", """You are a StackOverflow content preprocessing expert. Your task is to parse and transform raw markdown documentation into LLM-friendly format.
 
 PREPROCESSING REQUIREMENTS:
 
-1. PAPER STRUCTURE
-   - Abstract → Introduction → Methods → Results → Discussion → Conclusion
-   - Add missing section headers where needed
-   - Split run-on sections appropriately
+1. QUESTION FORMATTING
+   - Format title as main header
+   - Structure problem description clearly
+   - Format error messages in code blocks
+   - Highlight key requirements
+   - Structure expected vs actual results
+   ```question
+   # [Title]
+   
+   ## Problem Description
+   [Clear explanation]
+   
+   ## Error/Issue
+   ```error
+   [Error message]
+   ```
+   
+   ## Expected Behavior
+   [What should happen]
+   
+   ## Current Behavior
+   [What actually happens]
+   ```
 
-2. TECHNICAL CONTENT
-   - Format mathematical equations using proper markdown
-   - Convert inline equations to $equation$ format
-   - Convert block equations to $$equation$$ format
-   - Preserve statistical notations and symbols
+2. CODE FORMATTING
+   - Add proper language tags
+   - Format minimal reproducible examples
+   - Separate setup/execution code
+   - Show output/errors clearly
+   ```python
+   # Setup
+   import library
+   
+   # Problem code
+   def function():
+       problematic_code()
+   
+   # Error output
+   ```error
+   Stack trace or error
+   ```
 
-3. FIGURE & TABLE HANDLING
-   - Convert figure captions to structured format:
-     ```figure
-     Caption: [caption text]
-     Description: [detailed description]
-     Key Findings: [main points from figure]
-     ```
-   - Format tables with proper markdown syntax
-   - Include table headers and descriptions
+3. ANSWER FORMATTING
+   - Structure solution steps clearly
+   - Format code examples properly
+   - Include explanations between code blocks
+   - Show expected output
+   - Add version-specific notes
+   ```answer
+   ## Solution
+   Explanation of approach...
+   
+   ```python
+   # Fixed code
+   def function():
+       working_code()
+   ```
+   
+   ## Why it works
+   [Explanation]
+   ```
 
-4. CITATIONS & REFERENCES
-   - Convert citations to consistent format [Author, Year]
-   - Format reference list entries consistently
-   - Preserve DOIs and links
-   - Add section breaks between references
+4. COMMENTS/DISCUSSION
+   - Format clarifying questions
+   - Preserve important comment threads
+   - Format code snippets in comments
+   - Maintain user references
+   - Keep relevant debugging steps
 
-5. RESULTS PRESENTATION
-   - Format statistical results consistently (p-values, test statistics)
-   - Structure methodology steps clearly
-   - Present experimental conditions in tables where appropriate
-   - Format data ranges and uncertainties consistently
+5. METADATA
+   - Preserve tags
+   - Format version information
+   - Keep environment details
+   - Maintain links to documentation
+   - Format related questions
 
 6. STANDARDIZATION
-   - Convert all headers to markdown syntax
-   - Add proper code block language identifiers
+   - Convert HTML to markdown
    - Format lists consistently
-   - Preserve technical accuracy
-   - Remove HTML formatting
+   - Structure code blocks properly
    - Clean up whitespace
+   - Handle special characters
 
-Transform the following academic content:"""),
+Transform the following StackOverflow content:"""),
             ("human", "{content}")
         ])
 
     async def extract(self, result: CrawlResult) -> List[Document]:
         try:
             content = result.markdown_v2.raw_markdown
-            print(f"Processing academic document with {len(content)} characters...")
+            print(f"Processing StackOverflow content with {len(content)} characters...")
             
             chunks = self.text_splitter.split_text(content)
             print(f"Split into {len(chunks)} chunks for parallel processing")
@@ -118,7 +158,7 @@ Transform the following academic content:"""),
                 page_content=processed_content,
                 metadata={
                     'url': result.url,
-                    'type': 'academic_paper',
+                    'type': 'stackoverflow',
                     'original_size': len(content),
                     'processed_size': len(processed_content)
                 }
