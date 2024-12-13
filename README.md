@@ -36,7 +36,8 @@ indexer = await WebIndexer().initialize_crawler()
 result = await indexer.process_initial_url(
     url="https://example.com/docs",
     content_type=ContentType.DOCUMENTATION,
-    max_depth=2
+    max_depth=2,
+    max_links=5
 )
 ```
 
@@ -46,7 +47,55 @@ result = await indexer.process_initial_url(
 - `url`: Target URL to process
 - `content_type`: Specific ContentType enum value
 - `max_depth`: Maximum crawling depth (default: 2)
+- `max_links`: Maximum number of links to process at each depth
 - `backlink_threshold`: Minimum backlink ratio (default: 0.3)
+
+### Depth Control Examples
+
+#### max_depth=0 (Single Page)
+```python
+# Only processes the target URL, no link crawling
+result = await indexer.process_initial_url(
+    url="https://python.org/docs/tutorial",
+    max_depth=0
+)
+```
+Initial URL: python.org/docs
+│
+├── Process this page ✅
+│
+└── Direct links: ✅ Will be crawled
+├── python.org/docs/tutorial
+├── python.org/docs/library
+└── python.org/docs/reference
+`
+Initial URL: python.org/docs (finds 20 links)
+│
+├── Only processes first 5 links:
+│ ├── python.org/docs/tutorial ✅
+│ ├── python.org/docs/library ✅
+│ ├── python.org/docs/reference ✅
+│ ├── python.org/docs/howto ✅
+│ ├── python.org/docs/faq ✅
+│ └── python.org/docs/glossary ❌ (dropped)
+│
+└── Each of those 5 pages also only processes their top 5 links
+:
+URL: python.org/docs/tutorial
+Backlinks: 4 pages link to it
+Ratio: 4/10 = 0.4 (40%) ✅ Process
+URL: python.org/docs/obscure-page
+Backlinks: 1 page links to it
+Ratio: 1/10 = 0.1 (10%) ❌ Skip
+
+#### max_depth=0 (Single Page)
+```python
+# Only processes the target URL, no link crawling
+result = await indexer.process_initial_url(
+    url="https://python.org/docs/tutorial",
+    max_depth=0
+)
+```
 
 ### Content Types
 ```python
