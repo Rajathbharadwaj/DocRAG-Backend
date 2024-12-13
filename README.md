@@ -1,145 +1,116 @@
-# DocRAG
+# Web Indexer for AI
 
-A production-ready instant RAG system for documentation. Efficiently crawls, processes, and indexes documentation for LLM-optimized information retrieval in seconds.
+A high-performance web indexing system optimized for AI content processing.
+
+## Features
+
+### Specialized Content Extractors
+- **Code Documentation**: Processes code docs, tutorials, and technical guides
+- **API Documentation**: Handles API references, endpoints, and requests
+- **Academic Papers**: Processes research papers and technical publications
+- **GitHub Content**: Specialized for READMEs, Issues, PRs, and Discussions
+- **StackOverflow**: Optimized for questions, answers, and technical discussions
+
+### Performance Optimizations
+- Parallel processing with batched operations
+- Fast LLM model (gpt-4o-mini)
+- Efficient content chunking
+- Optimized backlink processing
+- Concurrent URL crawling
+
+### Key Components
+- **WebIndexer**: Main indexing engine
+- **ContentProcessor**: Smart content type detection and routing
+- **Specialized Extractors**: Type-specific content processing
+- **RAG Integration**: Vector database storage for processed content
 
 ## Installation
 
 ```bash
-pip install docrag
+pip install crawl4ai
 ```
 
 ## Quick Start
 
-### Python Usage
 ```python
-from docrag import DocumentIndexer
-from docrag.config import IndexingConfig
+from indexer import WebIndexer
 
-# Initialize with custom configuration
-config = IndexingConfig(
-    max_depth=2,
-    backlink_threshold=0.1,
-    max_urls_per_depth=20,
-    chunk_size=1000,
-    openai_api_key="your-api-key" or anthropic_api_key="your-api-key"  # Or use environment variable: OPENAI_API_KEY or ANTHROPIC_API_KEY       
-)
+# Initialize indexer
+indexer = await WebIndexer().initialize_crawler()
 
-indexer = DocumentIndexer(config)
-
-# Index documentation
-await indexer.index(
-    url="https://python.langchain.com/docs/get_started/introduction",
-    doc_name="langchain_docs"
-)
-
-# Query the indexed content
-response = await indexer.query(
-    "What are the main components of LangChain?",
-    doc_name="langchain_docs"
+# Process a URL
+result = await indexer.process_initial_url(
+    "https://example.com/docs",
+    max_depth=2
 )
 ```
-
-### API Usage
-
-Start the server:
-```bash
-docrag start --host 0.0.0.0 --port 8000
-```
-
-Or with environment file:
-```bash
-docrag start --env-file .env
-```
-
-#### API Endpoints
-
-Index documentation:
-```bash
-curl -X POST "http://localhost:8000/v1/index" \
-  -H "Authorization: Bearer ${API_KEY}" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "url": "https://python.langchain.com/docs/get_started/introduction",
-    "doc_name": "langchain_docs",
-    "config": {
-      "max_depth": 2,
-      "backlink_threshold": 0.1,
-      "max_urls_per_depth": 20
-    }
-  }'
-```
-
-Check indexing status:
-```bash
-curl "http://localhost:8000/v1/status/langchain_docs" \
-  -H "Authorization: Bearer ${API_KEY}"
-```
-
-Query indexed content:
-```bash
-curl -X POST "http://localhost:8000/v1/query" \
-  -H "Authorization: Bearer ${API_KEY}" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "query": "What are the main components of LangChain?",
-    "doc_name": "langchain_docs",
-    "options": {
-      "temperature": 0.7,
-      "max_tokens": 500
-    }
-  }'
-```
-
-## Features
-
-- **Instant Processing**: Immediately indexes main URL content for quick RAG availability
-- **Background Processing**: Asynchronously crawls and indexes backlinks
-- **Comprehensive Content Extraction**: 
-  - Text content
-  - Code blocks
-  - Headers and sections
-  - Backlinks analysis
-- **Production Ready**:
-  - API key authentication
-  - Rate limiting
-  - Error handling
-  - Logging
-  - Health checks
-  - Docker support
 
 ## Configuration
 
-Environment variables:
-```env
-OPENAI_API_KEY=your-openai-api-key
-DOCRAG_API_KEY=your-api-key
-DOCRAG_MAX_REQUESTS=100
-DOCRAG_RATE_LIMIT=60
+### Crawler Settings
+```python
+crawler_config = {
+    'headless': True,
+    'browser_type': 'chromium',
+    'page_timeout': 60000,
+    'word_count_threshold': 10,
+    'remove_overlay_elements': True
+}
 ```
 
-## Docker
+### Processing Options
+- `max_depth`: Maximum crawling depth (default: 2)
+- `backlink_threshold`: Minimum backlink ratio (default: 0.3)
+- `batch_size`: URLs processed in parallel (default: 10)
 
-```bash
-docker pull docrag/docrag
-docker run -p 8000:8000 \
-  -e OPENAI_API_KEY=your-openai-api-key \
-  -e DOCRAG_API_KEY=your-api-key \
-  docrag/docrag
-```
+## Content Processing
 
-## Development
+### Supported Content Types
+1. Code Documentation
+   - Technical guides
+   - Library documentation
+   - Implementation examples
 
-Install development dependencies:
-```bash
-pip install -e ".[dev]"
-```
+2. API Documentation
+   - Endpoint descriptions
+   - Request/response formats
+   - Authentication details
 
-Run tests:
-```bash
-pytest tests/
-```
+3. Academic Content
+   - Research papers
+   - Technical publications
+   - Mathematical content
+
+4. GitHub Content
+   - READMEs
+   - Issues and PRs
+   - Discussions
+   - Repository metadata
+
+5. StackOverflow Content
+   - Questions and answers
+   - Code examples
+   - Technical discussions
+
+### Processing Pipeline
+1. Content type detection
+2. Specialized extraction
+3. Batch processing
+4. Vector storage
+5. Backlink management
+
+## Performance
+
+- Parallel URL processing
+- Batched content extraction
+- Optimized LLM calls
+- Efficient chunking
+- Concurrent operations
+
+## Contributing
+
+Contributions welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 ## License
 
-MIT License
-
+MIT License - see [LICENSE](LICENSE) for details.
