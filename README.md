@@ -1,6 +1,6 @@
-# Web Indexer for AI
+# DocRAG AI
 
-A high-performance web indexing system optimized for AI content processing.
+A high-performance multi-document RAG system. Your one stop place for all your document understanding needs. Don't waste your time reading through documents. Let DocRAG do it for you while you focus on the important stuff.
 
 ## Features
 
