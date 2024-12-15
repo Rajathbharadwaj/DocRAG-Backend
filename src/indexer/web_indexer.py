@@ -8,12 +8,15 @@ from model.types import ContentType
 from .content_processor import ContentProcessor
 from model.content import PageContent
 import asyncio
+from langchain.prompts import PromptTemplate
+from rag.vectorstore_engine import VectorStoreEngine
+from datetime import datetime
 
 class WebIndexer:
     def __init__(self, 
                  max_depth: int = 2, 
                  backlink_threshold: float = 0.3,
-                 rag_engine = None):
+                 rag_engine: Optional[VectorStoreEngine] = None):
         self.max_depth = max_depth
         self.backlink_threshold = backlink_threshold
         self.rag_engine = rag_engine
@@ -23,6 +26,16 @@ class WebIndexer:
         self.background_task: Optional[asyncio.Task] = None
         self.content_processor = ContentProcessor()
         self.logger = logging.getLogger(__name__)
+        
+        # Summary prompt template
+        self.summary_prompt = PromptTemplate(
+            template="""Given the following document content, provide a concise summary in 2-3 sentences
+Content:
+{content}
+
+Summary:""",
+            input_variables=["content"]
+        )
 
     async def initialize_crawler(self):
         """Initialize crawler with proper configuration"""
@@ -60,7 +73,7 @@ class WebIndexer:
 
     async def process_initial_url(self, 
                                 url: str,
-                                content_type: Optional[ContentType] = None,
+                                content_type: ContentType,
                                 max_depth: Optional[int] = None,
                                 max_links: Optional[int] = None,
                                 backlink_threshold: Optional[float] = None) -> Optional[PageContent]:
@@ -82,34 +95,55 @@ class WebIndexer:
             documents = await self.content_processor.process(crawl_result, content_type)
             
             if documents:
-                # Limit number of links if max_links is set
-                links_to_process = crawl_result.links
-                if self.max_links:
-                    links_to_process = list(links_to_process)[:self.max_links]
+                # Convert crawl_result.links to proper Set[str]
+                processed_links = set()
+                if isinstance(crawl_result.links, dict):
+                    if 'internal' in crawl_result.links:
+                        processed_links.update(
+                            link['href'] for link in crawl_result.links['internal']
+                            if 'href' in link
+                        )
+                    if 'external' in crawl_result.links:
+                        processed_links.update(
+                            link['href'] for link in crawl_result.links['external']
+                            if 'href' in link
+                        )
                 
-                # Store in vector DB
+                # Limit links if max_links is set
+                if max_links:
+                    processed_links = set(list(processed_links)[:max_links])
+                
+                # Update tracking
+                self.visited_urls.add(url)
+                self.url_queue.update(processed_links)
+                
+                # Generate summary for the entire content
+                full_content = "\n\n".join(doc.page_content for doc in documents)
+                summary = await self._generate_summary(full_content)
+                
+                # Add enhanced metadata to documents
+                for doc in documents:
+                    doc.metadata.update({
+                        'url': url,
+                        'content_type': content_type.value,
+                        'extraction_date': datetime.now().isoformat(),
+                        'document_summary': summary,
+                        'title': crawl_result.metadata.get('title', ''),
+                        'description': crawl_result.metadata.get('description', ''),
+                        'keywords': crawl_result.metadata.get('keywords', []),
+                        'author': crawl_result.metadata.get('author', ''),
+                        'last_modified': crawl_result.metadata.get('last_modified', '')
+                    })
+                
+                # Use the existing RAG engine
                 if self.rag_engine:
                     await self.rag_engine.add_documents(documents)
                 
-                # Update tracking with limited links
-                self.visited_urls.add(url)
-                self.url_queue.update(links_to_process)
-                
-                # Update backlinks for limited set
-                for link in links_to_process:
-                    if link not in self.backlinks_map:
-                        self.backlinks_map[link] = set()
-                    self.backlinks_map[link].add(url)
-                
-                # Start background processing
-                self.background_task = asyncio.create_task(
-                    self._process_backlinks_async()
-                )
-                
                 return PageContent(
                     url=url,
+                    content_type=content_type,
                     documents=documents,
-                    links=links_to_process
+                    links=processed_links,
                 )
             
             return None
@@ -220,3 +254,14 @@ class WebIndexer:
                 await self.background_task
             except asyncio.CancelledError:
                 pass
+
+    async def _generate_summary(self, content: str) -> str:
+        """Generate a concise summary of the document content"""
+        try:
+            response = await self.llm.ainvoke(
+                self.summary_prompt.format(content=content[:4000])  # Limit content length
+            )
+            return response.strip()
+        except Exception as e:
+            self.logger.warning(f"Error generating summary: {str(e)}")
+            return ""

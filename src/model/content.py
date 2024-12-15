@@ -26,7 +26,7 @@ class PageContent(BaseModel):
     backlinks: Set[str] = Field(default_factory=set)
     media_references: Dict = Field(default_factory=dict)
     metadata: Dict = Field(default_factory=dict)
-    extraction_date: datetime 
+    extraction_date: datetime = Field(default_factory=lambda: datetime.now())
 
 class ArticleSection(BaseModel):
     """Represents a section within an article"""

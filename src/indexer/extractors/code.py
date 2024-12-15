@@ -129,6 +129,7 @@ PREPROCESSING REQUIREMENTS:
    - Ensure logical content flow
 
 YOUR TASK:
+0. Give a summary of the following markdown content:
 1. Parse the provided markdown
 2. Apply all preprocessing rules
 3. Maintain the original meaning and structure

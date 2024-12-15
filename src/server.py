@@ -5,7 +5,7 @@ from typing import Optional, List, Dict
 from indexer.content_processor import ContentProcessor
 from model.types import ContentType
 from model.config import ProcessingConfig
-from rag.query_engine import RAGQueryEngine
+from src.rag.vectorstore_engine import RAGQueryEngine
 from config import settings, LLMProvider
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_anthropic import ChatAnthropic

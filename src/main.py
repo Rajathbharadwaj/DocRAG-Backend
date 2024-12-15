@@ -1,6 +1,6 @@
 import asyncio
 from indexer.web_indexer import WebIndexer
-from rag.query_engine import RAGQueryEngine
+from src.rag.vectorstore_engine import RAGQueryEngine
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 import os
 from dotenv import load_dotenv
