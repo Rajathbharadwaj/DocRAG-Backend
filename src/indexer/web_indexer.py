@@ -1,8 +1,6 @@
-from typing import Optional, Dict, List, Set
+from typing import List, Dict, Set, Optional
 import logging
 from urllib.parse import urlparse
-import chromadb
-from chromadb.utils import embedding_functions
 from crawl4ai import AsyncWebCrawler
 from model.types import ContentType
 from .content_processor import ContentProcessor
@@ -11,15 +9,30 @@ import asyncio
 from langchain.prompts import PromptTemplate
 from rag.vectorstore_engine import VectorStoreEngine
 from datetime import datetime
+from langchain.chat_models import ChatOpenAI
 
 class WebIndexer:
-    def __init__(self, 
-                 max_depth: int = 2, 
-                 backlink_threshold: float = 0.3,
-                 rag_engine: Optional[VectorStoreEngine] = None):
+    def __init__(
+        self, 
+        doc_name: str, 
+        max_depth: int = 2, 
+        max_links: Optional[int] = None,
+        backlink_threshold: float = 0.3,
+        use_serverless: bool = True,
+        region: str = "us-east-1"
+    ):
+        self.doc_name = doc_name
         self.max_depth = max_depth
+        self.max_links = max_links
         self.backlink_threshold = backlink_threshold
-        self.rag_engine = rag_engine
+        
+        # Initialize VectorStore with doc_name
+        self.vector_store = VectorStoreEngine(
+            doc_name=doc_name,
+            use_serverless=use_serverless,
+            region=region
+        )
+        
         self.visited_urls: Set[str] = set()
         self.url_queue: Set[str] = set()
         self.backlinks_map: Dict[str, Set[str]] = {}
@@ -35,6 +48,13 @@ Content:
 
 Summary:""",
             input_variables=["content"]
+        )
+        
+        # Initialize LLM for summaries
+        self.llm = ChatOpenAI(
+            model="gpt-3.5-turbo",
+            temperature=0,
+            max_tokens=200
         )
 
     async def initialize_crawler(self):
@@ -123,21 +143,31 @@ Summary:""",
                 
                 # Add enhanced metadata to documents
                 for doc in documents:
-                    doc.metadata.update({
+                    # Clean metadata values - replace None with empty strings
+                    metadata = {
                         'url': url,
                         'content_type': content_type.value,
                         'extraction_date': datetime.now().isoformat(),
-                        'document_summary': summary,
+                        'document_summary': summary or "",
                         'title': crawl_result.metadata.get('title', ''),
                         'description': crawl_result.metadata.get('description', ''),
                         'keywords': crawl_result.metadata.get('keywords', []),
                         'author': crawl_result.metadata.get('author', ''),
-                        'last_modified': crawl_result.metadata.get('last_modified', '')
-                    })
+                        'last_modified': crawl_result.metadata.get('last_modified', ''),
+                        'source': url
+                    }
+                    
+                    # Clean any remaining None values
+                    cleaned_metadata = {
+                        k: (v if v is not None else "") 
+                        for k, v in metadata.items()
+                    }
+                    
+                    doc.metadata.update(cleaned_metadata)
                 
-                # Use the existing RAG engine
-                if self.rag_engine:
-                    await self.rag_engine.add_documents(documents)
+                # Use the vector store
+                if self.vector_store:
+                    await self.vector_store.add_documents(documents)
                 
                 return PageContent(
                     url=url,
@@ -149,7 +179,7 @@ Summary:""",
             return None
             
         except Exception as e:
-            self.logger.error(f"Error processing URL: {str(e)}")
+            self.logger.error(f"Error processing URL {url}: {str(e)}")
             raise
 
     async def _process_backlinks_async(self):
@@ -190,14 +220,14 @@ Summary:""",
                     all_documents = await asyncio.gather(*process_tasks)
                     
                     # Batch update RAG engine
-                    if self.rag_engine:
+                    if self.vector_store:
                         documents_to_add = [
                             doc for docs in all_documents 
                             for doc in docs 
                             if docs
                         ]
                         if documents_to_add:
-                            await self.rag_engine.add_documents(documents_to_add)
+                            await self.vector_store.add_documents(documents_to_add)
                     
                     # Batch update tracking
                     for url, result in zip(batch, crawl_results):
@@ -223,8 +253,8 @@ Summary:""",
             crawl_result = await self.crawler.crawl(url)
             documents = await self.content_processor.process(crawl_result)
             
-            if documents and self.rag_engine:
-                await self.rag_engine.add_documents(documents)
+            if documents and self.vector_store:
+                await self.vector_store.add_documents(documents)
                 self.visited_urls.add(url)
                 self.url_queue.update(crawl_result.links)
                 
@@ -256,12 +286,13 @@ Summary:""",
                 pass
 
     async def _generate_summary(self, content: str) -> str:
-        """Generate a concise summary of the document content"""
+        """Generate a summary of the content"""
         try:
             response = await self.llm.ainvoke(
-                self.summary_prompt.format(content=content[:4000])  # Limit content length
+                self.summary_prompt.format(content=content)
             )
-            return response.strip()
+            # Extract the content from AIMessage
+            return response.content if hasattr(response, 'content') else str(response)
         except Exception as e:
             self.logger.warning(f"Error generating summary: {str(e)}")
             return ""
