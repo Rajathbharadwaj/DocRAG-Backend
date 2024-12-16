@@ -1,0 +1,22 @@
+{
+  "dockerfile_lines": [],
+  "graphs": {
+    "chat": "./src/rag/retrieval_agent/graph.py:graph"
+  },
+  "env": ".env",
+  "python_version": "3.12",
+  "dependencies": [
+    ".",
+    "langchain_pinecone",
+    "protoc-gen-openapiv2",
+    "typing-extensions",
+    "crawl4ai[all]",
+    "chromadb",
+    "tiktoken",
+    "tqdm",
+    "openai",
+    "langchain",
+    "langchain-community",
+    "langchain-openai"
+  ]
+}

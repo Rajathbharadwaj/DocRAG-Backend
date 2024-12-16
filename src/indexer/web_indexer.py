@@ -9,7 +9,7 @@ import asyncio
 from langchain.prompts import PromptTemplate
 from rag.vectorstore_engine import VectorStoreEngine
 from datetime import datetime
-from langchain.chat_models import ChatOpenAI
+from langchain_openai import ChatOpenAI
 
 class WebIndexer:
     def __init__(
@@ -52,7 +52,7 @@ Summary:""",
         
         # Initialize LLM for summaries
         self.llm = ChatOpenAI(
-            model="gpt-3.5-turbo",
+            model="gpt-4o-mini",
             temperature=0,
             max_tokens=200
         )
@@ -169,6 +169,9 @@ Summary:""",
                 if self.vector_store:
                     await self.vector_store.add_documents(documents)
                 
+                # Start background processing
+                self.background_task = asyncio.create_task(self._process_backlinks_async())
+                
                 return PageContent(
                     url=url,
                     content_type=content_type,
@@ -185,11 +188,12 @@ Summary:""",
     async def _process_backlinks_async(self):
         """Process remaining URLs in background using efficient batching"""
         try:
-            print(f"[DEBUG] Starting batch background processing")
+            self.logger.info("Starting background backlinks processing")
             
             current_depth = 1
             while current_depth < self.max_depth and self.url_queue:
-                print(f"[DEBUG] Processing depth {current_depth}")
+                self.logger.info(f"Processing depth {current_depth}, URLs in queue: {len(self.url_queue)}")
+                
                 urls_at_depth = self.url_queue.copy()
                 self.url_queue.clear()
                 
@@ -204,7 +208,8 @@ Summary:""",
                 batch_size = 10  # Increased from 5
                 for i in range(0, len(urls_to_process), batch_size):
                     batch = urls_to_process[i:i + batch_size]
-                    print(f"[DEBUG] Processing batch {i//batch_size + 1} of {(len(urls_to_process) + batch_size - 1)//batch_size}")
+                    self.logger.info(f"Processing batch {i//batch_size + 1} of {(len(urls_to_process) + batch_size - 1)//batch_size}")
+                    self.logger.debug(f"Batch URLs: {batch}")
                     
                     # Crawl all URLs in batch
                     async with self.crawler as crawler:
@@ -227,6 +232,7 @@ Summary:""",
                             if docs
                         ]
                         if documents_to_add:
+                            self.logger.info(f"Adding {len(documents_to_add)} documents to vector store in background processing")
                             await self.vector_store.add_documents(documents_to_add)
                     
                     # Batch update tracking
@@ -240,7 +246,8 @@ Summary:""",
                                 if link not in self.backlinks_map:
                                     self.backlinks_map[link] = set()
                                 self.backlinks_map[link].add(url)
-                    
+                
+                self.logger.info(f"Completed depth {current_depth}, processed {len(self.visited_urls)} URLs total")
                 current_depth += 1
                 print(f"[DEBUG] Completed depth {current_depth}")
                 
