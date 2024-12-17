@@ -9,7 +9,7 @@ class LLMProvider(str, Enum):
 
 class Settings:
     def __init__(self):
-        load_dotenv(override=True, dotenv_path=".env")
+        load_dotenv(override=True, dotenv_path="../.env")
         
         # API Keys
         self.openai_api_key: str = os.getenv("OPENAI_API_KEY")

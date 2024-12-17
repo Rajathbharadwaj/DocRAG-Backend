@@ -25,6 +25,7 @@ class WebIndexer:
         self.max_depth = max_depth
         self.max_links = max_links
         self.backlink_threshold = backlink_threshold
+        self.content_type: Optional[ContentType] = None
         
         # Initialize VectorStore with doc_name
         self.vector_store = VectorStoreEngine(
@@ -112,7 +113,8 @@ Summary:""",
                     clean_content=True,
                     bypass_cache=True
                 )
-            documents = await self.content_processor.process(crawl_result, content_type)
+            self.content_type = content_type
+            documents = await self.content_processor.process(crawl_result, self.content_type)
             
             if documents:
                 # Convert crawl_result.links to proper Set[str]
@@ -274,13 +276,23 @@ Summary:""",
         except Exception as e:
             self.logger.error(f"Error processing URL {url}: {str(e)}")
 
-    def get_indexing_status(self) -> Dict:
-        """Get current indexing status"""
+    async def get_indexing_status(self):
+        """Get the current status of the indexing process"""
+        # Continue processing if either:
+        # 1. Background task is still running OR
+        # 2. There are URLs in the queue
+        is_processing = (
+            (self.background_task and not self.background_task.done()) or 
+            len(self.url_queue) > 0
+        )
+        
         return {
-            "is_processing": self.background_task is not None and not self.background_task.done(),
+            "status": "processing" if is_processing else "complete",
             "urls_processed": len(self.visited_urls),
             "urls_queued": len(self.url_queue),
-            "current_depth": len(self.visited_urls) > 0,
+            "is_complete": not is_processing,
+            # Add debug info
+            "background_task_active": bool(self.background_task and not self.background_task.done())
         }
 
     async def cleanup(self):

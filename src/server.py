@@ -1,78 +1,59 @@
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Response
 from pydantic import BaseModel, HttpUrl, Field
-from typing import Optional, List, Dict
-from indexer.content_processor import ContentProcessor
+from typing import Optional, List, Dict, cast
 from model.types import ContentType
-from model.config import ProcessingConfig
-from src.rag.vectorstore_engine import RAGQueryEngine
+from rag import retrieve_documents
 from config import settings, LLMProvider
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_anthropic import ChatAnthropic
+from indexer.web_indexer import WebIndexer
+from sse_starlette.sse import EventSourceResponse
+from fastapi.responses import StreamingResponse
 import logging
+import asyncio
+import json
 
 logger = logging.getLogger(__name__)
 
-# Global variables
-content_processor: Optional[ContentProcessor] = None
-rag_engine: Optional[RAGQueryEngine] = None
+
+# Initialize FastAPI with lifespan
+app = FastAPI()
+
+# Add state management
+class AppState:
+    def __init__(self):
+        self.web_indexer = None
+
+app.state = AppState()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup
-    global content_processor, rag_engine
-    
-    # Initialize LLM based on default provider
-    if settings.default_provider == LLMProvider.ANTHROPIC:
-        llm = ChatAnthropic(
-            model=settings.anthropic_model,
-            temperature=settings.temperature,
-            anthropic_api_key=settings.anthropic_api_key
-        )
-    else:
-        llm = ChatOpenAI(
-            model=settings.openai_model,
-            temperature=settings.temperature,
-            api_key=settings.openai_api_key
-        )
-    
-    # Initialize embeddings
-    embeddings = OpenAIEmbeddings(
-        api_key=settings.openai_api_key
-    )
-    
-    # Initialize content processor
-    content_processor = ContentProcessor()
-    
-    # Initialize RAG engine
-    rag_engine = RAGQueryEngine(
-        llm=llm,
-        embeddings=embeddings,
-        vector_db_path=settings.vector_store_path
-    ).initialize()
-    
-    yield
-    
-    # Cleanup
-    if rag_engine:
-        await rag_engine.cleanup()
+    """Lifespan context manager for FastAPI app"""
+    try:
+        # Initialize any resources
+        yield
+    finally:
+        # Cleanup
+        if app.state.web_indexer:
+            await app.state.web_indexer.cleanup()
 
-# Initialize FastAPI with lifespan
 app = FastAPI(lifespan=lifespan)
 
 class URLInput(BaseModel):
     url: HttpUrl
     content_type: Optional[ContentType] = None
     max_depth: int = Field(default=2, ge=1)
+    max_links: Optional[int] = Field(default=None)
     backlink_threshold: float = Field(default=0.3, ge=0.0, le=1.0)
     doc_name: str
 
 class RAGRequest(BaseModel):
     question: str
-    thread_id: str = "default"
-    llm_provider: LLMProvider = LLMProvider.ANTHROPIC
-    return_sources: bool = False
-    content_filter: Optional[List[ContentType]] = None
+    # thread_id: str = "default"
+    # llm_provider: LLMProvider = LLMProvider.ANTHROPIC
+    # return_sources: bool = False
+    # content_filter: Optional[List[ContentType]] = None
 
 def get_llm(provider: LLMProvider):
     """Get LLM based on provider choice"""
@@ -97,44 +78,38 @@ def get_llm(provider: LLMProvider):
 async def index_url(url_input: URLInput, background_tasks: BackgroundTasks):
     """Process URL with content type detection and custom parameters"""
     try:
-        # Process initial URL
-        content = await content_processor.process_url(
+        # Initialize web indexer with descriptive doc_name
+        app.state.web_indexer = WebIndexer(
+            doc_name=url_input.doc_name,
+            max_depth=url_input.max_depth,
+            max_links=url_input.max_links,
+            backlink_threshold=url_input.backlink_threshold
+        )
+        
+        # Initialize crawler
+        await app.state.web_indexer.initialize_crawler()
+        
+        # Convert string to ContentType enum
+        content_type = ContentType(url_input.content_type) if url_input.content_type else ContentType.DOCUMENTATION
+        
+        # Start initial processing in background
+        background_tasks.add_task(
+            app.state.web_indexer.process_initial_url,
             url=str(url_input.url),
-            content_type=url_input.content_type
+            content_type=content_type
         )
-        
-        if not content:
-            raise HTTPException(
-                status_code=400,
-                detail="Failed to process URL. Please check if the URL is accessible."
-            )
-        
-        # Add to RAG engine
-        await rag_engine.add_content(
-            content=content,
-            doc_name=url_input.doc_name
-        )
-        
-        # Schedule background crawling if depth > 1
-        if url_input.max_depth > 1:
-            background_tasks.add_task(
-                rag_engine.crawl_links,
-                start_url=str(url_input.url),
-                max_depth=url_input.max_depth,
-                backlink_threshold=url_input.backlink_threshold,
-                doc_name=url_input.doc_name
-            )
         
         return {
-            "status": "success",
-            "message": "Initial page processed, background indexing started",
-            "content_type": content.content_type.value,
-            "doc_name": url_input.doc_name,
-            "crawl_config": {
-                "max_depth": url_input.max_depth,
-                "backlink_threshold": url_input.backlink_threshold
-            }
+            "status": "processing",
+            "message": "URL indexing started. Subscribe to /index_status_stream/{doc_name} for real-time updates.",
+            "doc_name": url_input.doc_name
         }
+    except ValueError as e:
+        logger.error(f"Invalid content type: {str(e)}")
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid content type. Valid types are: {[t.value for t in ContentType]}"
+        )
     except Exception as e:
         logger.error(f"Error processing URL: {str(e)}")
         raise HTTPException(
@@ -142,22 +117,78 @@ async def index_url(url_input: URLInput, background_tasks: BackgroundTasks):
             detail=f"Error processing URL: {str(e)}"
         )
 
-@app.get("/indexing_status/{doc_name}")
-async def get_status(doc_name: str):
-    """Get the current status of background indexing for a document"""
-    return await rag_engine.get_indexing_status(doc_name)
+@app.get("/index_status_stream/{doc_name}")
+async def index_status_stream(doc_name: str):
+    """Stream indexing status updates using SSE"""
+    async def event_generator():
+        retry_count = 0
+        max_retries = 3  # Number of empty status retries before giving up
+        
+        while True:
+            if not app.state.web_indexer:
+                yield {
+                    "event": "error",
+                    "data": json.dumps({
+                        "error": "No indexer initialized",
+                        "doc_name": doc_name
+                    })
+                }
+                break
+
+            try:
+                status = await app.state.web_indexer.get_indexing_status()
+                
+                # Reset retry counter on successful status
+                retry_count = 0
+                
+                # Always send an update
+                yield {
+                    "event": "update",
+                    "data": json.dumps(status)
+                }
+                
+                # Only break if we're actually complete
+                if status["is_complete"]:
+                    yield {
+                        "event": "complete",
+                        "data": json.dumps(status)
+                    }
+                    break
+                
+                await asyncio.sleep(1)  # Update frequency
+                
+            except Exception as e:
+                logger.error(f"Error getting status: {str(e)}")
+                retry_count += 1
+                
+                if retry_count >= max_retries:
+                    yield {
+                        "event": "error",
+                        "data": json.dumps({
+                            "error": f"Failed to get status after {max_retries} retries",
+                            "doc_name": doc_name
+                        })
+                    }
+                    break
+                
+                await asyncio.sleep(2)  # Wait longer between retries
+
+    return EventSourceResponse(event_generator())
 
 @app.post("/query")
 async def query(request: RAGRequest):
     """Query endpoint with content type filtering"""
+    if not app.state.web_indexer:
+        raise HTTPException(
+            status_code=400,
+            detail="No indexer initialized. Please index a URL first."
+        )
     try:
-        llm = get_llm(request.llm_provider)
         
-        response = await rag_engine.query(
+        
+        response = await retrieve_documents(
             question=request.question,
-            thread_id=request.thread_id,
-            return_sources=request.return_sources,
-            content_filter=request.content_filter
+            index_name=app.state.web_indexer.doc_name
         )
         
         if request.return_sources:
@@ -178,6 +209,36 @@ async def query(request: RAGRequest):
             detail=f"Error processing query: {str(e)}"
         )
 
+@app.get("/indexing_status/{doc_name}")
+async def get_indexing_status(doc_name: str):
+    """Stream indexing status until complete"""
+    async def status_generator():
+        while True:
+            if not app.state.web_indexer:
+                yield f"event: error\ndata: {json.dumps({'error': 'No indexer initialized', 'doc_name': doc_name})}\n\n"
+                break
+
+            try:
+                status = await app.state.web_indexer.get_indexing_status()
+                
+                if status["is_complete"]:
+                    yield f"event: complete\ndata: {json.dumps(status)}\n\n"
+                    break
+                else:
+                    yield f"event: update\ndata: {json.dumps(status)}\n\n"
+                
+                await asyncio.sleep(1)  # Update frequency
+                
+            except Exception as e:
+                logger.error(f"Error getting status: {str(e)}")
+                yield f"event: error\ndata: {json.dumps({'error': str(e), 'doc_name': doc_name})}\n\n"
+                break
+
+    return StreamingResponse(
+        status_generator(),
+        media_type="text/event-stream"
+    )
+
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("server:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("server:app", host="0.0.0.0", port=8000, reload=False)

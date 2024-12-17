@@ -27,4 +27,4 @@ Make queries specific and targeted."""
 RESPONSE_SYSTEM_PROMPT = """Use the following context to answer the user's question:
 {context}
 
-Provide a comprehensive answer that directly addresses the question."""
+Provide a comprehensive answer that directly addresses the question. If code is required, provide it in a code block."""
