@@ -10,6 +10,7 @@ from langchain_anthropic import ChatAnthropic
 from indexer.web_indexer import WebIndexer
 from sse_starlette.sse import EventSourceResponse
 from fastapi.responses import StreamingResponse
+from fastapi.middleware.cors import CORSMiddleware
 import logging
 import asyncio
 import json
@@ -19,6 +20,15 @@ logger = logging.getLogger(__name__)
 
 # Initialize FastAPI with lifespan
 app = FastAPI()
+
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allows all origins
+    allow_credentials=True,
+    allow_methods=["*"],  # Allows all methods
+    allow_headers=["*"],  # Allows all headers
+)
 
 # Add state management
 class AppState:
@@ -30,6 +40,9 @@ app.state = AppState()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifespan context manager for FastAPI app"""
+    # Initialize app state
+    app.state = AppState()
+    
     try:
         # Initialize any resources
         yield
@@ -39,17 +52,18 @@ async def lifespan(app: FastAPI):
             await app.state.web_indexer.cleanup()
 
 app = FastAPI(lifespan=lifespan)
-
 class URLInput(BaseModel):
     url: HttpUrl
     content_type: Optional[ContentType] = None
-    max_depth: int = Field(default=2, ge=1)
+    max_depth: int = Field(default=2, ge=0)  # Changed to ge=0
     max_links: Optional[int] = Field(default=None)
     backlink_threshold: float = Field(default=0.3, ge=0.0, le=1.0)
     doc_name: str
 
 class RAGRequest(BaseModel):
     question: str
+    index_name: str
+    top_k: int = 4
     # thread_id: str = "default"
     # llm_provider: LLMProvider = LLMProvider.ANTHROPIC
     # return_sources: bool = False
@@ -92,7 +106,10 @@ async def index_url(url_input: URLInput, background_tasks: BackgroundTasks):
         # Convert string to ContentType enum
         content_type = ContentType(url_input.content_type) if url_input.content_type else ContentType.DOCUMENTATION
         
-        # Start initial processing in background
+        # Set processing flag before adding to background tasks
+        app.state.web_indexer.is_processing = True
+        
+        # Add both initial URL processing and backlink processing to background tasks
         background_tasks.add_task(
             app.state.web_indexer.process_initial_url,
             url=str(url_input.url),
@@ -155,7 +172,7 @@ async def index_status_stream(doc_name: str):
                     }
                     break
                 
-                await asyncio.sleep(1)  # Update frequency
+                await asyncio.sleep(3)  # Update frequency
                 
             except Exception as e:
                 logger.error(f"Error getting status: {str(e)}")
@@ -178,29 +195,13 @@ async def index_status_stream(doc_name: str):
 @app.post("/query")
 async def query(request: RAGRequest):
     """Query endpoint with content type filtering"""
-    if not app.state.web_indexer:
-        raise HTTPException(
-            status_code=400,
-            detail="No indexer initialized. Please index a URL first."
-        )
     try:
-        
-        
         response = await retrieve_documents(
-            question=request.question,
-            index_name=app.state.web_indexer.doc_name
+            query=request.question,
+            index_name=request.index_name,
+            top_k=request.top_k
         )
-        
-        if request.return_sources:
-            return {
-                "provider": request.llm_provider,
-                **response
-            }
-        else:
-            return {
-                "provider": request.llm_provider,
-                "answer": response["answer"]
-            }
+        return response
             
     except Exception as e:
         logger.error(f"Error in query endpoint: {str(e)}")
