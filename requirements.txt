@@ -6,3 +6,4 @@ openai
 langchain
 langchain-community
 langchain-openai
+protoc-gen-openapiv2
