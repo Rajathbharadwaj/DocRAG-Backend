@@ -55,9 +55,7 @@ app = FastAPI(lifespan=lifespan)
 class URLInput(BaseModel):
     url: HttpUrl
     content_type: Optional[ContentType] = None
-    max_depth: int = Field(default=2, ge=0)  # Changed to ge=0
     max_links: Optional[int] = Field(default=None)
-    backlink_threshold: float = Field(default=0.3, ge=0.0, le=1.0)
     doc_name: str
 
 class RAGRequest(BaseModel):
@@ -87,6 +85,7 @@ def get_llm(provider: LLMProvider):
         )
     else:
         raise HTTPException(400, f"Unsupported LLM provider: {provider}")
+    
 
 @app.post("/index_url")
 async def index_url(url_input: URLInput, background_tasks: BackgroundTasks):
@@ -95,9 +94,7 @@ async def index_url(url_input: URLInput, background_tasks: BackgroundTasks):
         # Initialize web indexer with descriptive doc_name
         app.state.web_indexer = WebIndexer(
             doc_name=url_input.doc_name,
-            max_depth=url_input.max_depth,
             max_links=url_input.max_links,
-            backlink_threshold=url_input.backlink_threshold
         )
         
         # Initialize crawler
@@ -110,17 +107,16 @@ async def index_url(url_input: URLInput, background_tasks: BackgroundTasks):
         app.state.web_indexer.is_processing = True
         
         # Add both initial URL processing and backlink processing to background tasks
-        background_tasks.add_task(
-            app.state.web_indexer.process_initial_url,
-            url=str(url_input.url),
-            content_type=content_type
-        )
+        
+        await app.state.web_indexer.process_initial_url(url=str(url_input.url), content_type=content_type)
+        
         
         return {
             "status": "processing",
             "message": "URL indexing started. Subscribe to /index_status_stream/{doc_name} for real-time updates.",
             "doc_name": url_input.doc_name
         }
+    
     except ValueError as e:
         logger.error(f"Invalid content type: {str(e)}")
         raise HTTPException(
@@ -141,17 +137,18 @@ async def index_status_stream(doc_name: str):
         retry_count = 0
         max_retries = 3  # Number of empty status retries before giving up
         
-        while True:
-            if not app.state.web_indexer:
-                yield {
-                    "event": "error",
-                    "data": json.dumps({
-                        "error": "No indexer initialized",
-                        "doc_name": doc_name
-                    })
-                }
-                break
+        # First verify if the indexer exists for this doc_name
+        if not app.state.web_indexer or app.state.web_indexer.doc_name != doc_name:
+            yield {
+                "event": "error",
+                "data": json.dumps({
+                    "error": f"No indexing process found for document: {doc_name}",
+                    "doc_name": doc_name
+                })
+            }
+            return
 
+        while True:
             try:
                 status = await app.state.web_indexer.get_indexing_status()
                 

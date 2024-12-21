@@ -1,4 +1,4 @@
-from typing import List, Optional
+from typing import List, Optional, Callable, Awaitable
 from langchain_core.documents import Document
 from crawl4ai import CrawlResult
 
@@ -62,14 +62,25 @@ class ContentProcessor:
         # Default to code documentation
         return ContentType.DOCUMENTATION
 
-    async def process(self, result: CrawlResult, content_type: Optional[ContentType] = None) -> List[Document]:
-        """Process content using appropriate extractor"""
+    async def process(
+        self, 
+        result: CrawlResult, 
+        content_type: Optional[ContentType] = None,
+        batch_callback: Optional[Callable[[List[Document]], Awaitable[None]]] = None
+    ) -> List[Document]:
+        """
+        Process content using appropriate extractor
+        
+        Args:
+            result: The crawl result to process
+            content_type: Optional content type override
+            batch_callback: Async callback function to process document batches
+        """
         try:
-            # Detect content type
-            
+            # Detect content type if not provided
             if not content_type:
                 content_type = self._detect_content_type(result)
-            logger.info(f"Detected content type: {content_type} for URL: {result.url}")
+            logger.info(f"Processing content type: {content_type} for URL: {result.url}")
 
             # Get appropriate extractor
             extractor = self.extractors.get(content_type)
@@ -77,10 +88,13 @@ class ContentProcessor:
                 logger.warning(f"No extractor found for content type: {content_type}")
                 return []
 
-            # Extract and process content
-            documents = await extractor.extract(result)
-            logger.info(f"Processed {len(documents)} documents from {result.url}")
+            # Extract and process content with batch callback
+            documents = await extractor.extract(
+                result=result,
+                batch_callback=batch_callback
+            )
             
+            logger.info(f"Processed content from {result.url}")
             return documents
 
         except Exception as e:

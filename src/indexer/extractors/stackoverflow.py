@@ -7,6 +7,7 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from crawl4ai import CrawlResult
 from .base import BaseExtractor
 import logging
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
@@ -121,7 +122,7 @@ Transform the following StackOverflow content:"""),
             ("human", "{content}")
         ])
 
-    async def extract(self, result: CrawlResult) -> List[Document]:
+    async def extract(self, result: CrawlResult, batch_callback) -> List[Document]:
         try:
             content = result.markdown_v2.raw_markdown
             print(f"Processing StackOverflow content with {len(content)} characters...")
@@ -129,40 +130,53 @@ Transform the following StackOverflow content:"""),
             chunks = self.text_splitter.split_text(content)
             print(f"Split into {len(chunks)} chunks for parallel processing")
             
-            # Process all chunks in parallel batches
-            batch_size = 10
+            # Process chunks concurrently in batches
+            batch_size = 5
             tasks = []
             
+            async def process_batch(batch_chunks, batch_idx):
+                try:
+                    # Process chunks in parallel
+                    responses = await self.llm.abatch([
+                        self.preprocess_prompt.format(content=chunk)
+                        for chunk in batch_chunks
+                    ])
+                    
+                    # Create documents from responses
+                    documents = []
+                    for j, response in enumerate(responses):
+                        if hasattr(response, 'content'):
+                            doc = Document(
+                                page_content=response.content,
+                                metadata={
+                                    'url': result.url,
+                                    'type': 'stackoverflow',
+                                    'chunk_index': batch_idx * batch_size + j,
+                                    'extraction_date': datetime.now().isoformat()
+                                }
+                            )
+                            documents.append(doc)
+                    
+                    # Store batch immediately
+                    if documents:
+                        await batch_callback(documents)
+                        print(f"Processed and stored batch {batch_idx + 1}")
+                        
+                except Exception as e:
+                    logger.error(f"Error processing batch {batch_idx}: {str(e)}")
+            
+            # Create tasks for each batch
             for i in range(0, len(chunks), batch_size):
                 batch = chunks[i:i + batch_size]
-                task = self.llm.abatch([
-                    self.preprocess_prompt.format(content=chunk)
-                    for chunk in batch
-                ])
+                task = asyncio.create_task(process_batch(batch, i // batch_size))
                 tasks.append(task)
-                print(f"Queued batch {len(tasks)} for processing")
             
-            print(f"Processing {len(tasks)} batches in parallel...")
-            all_responses = await asyncio.gather(*tasks)
+            # Wait for all batches to complete
+            if tasks:
+                await asyncio.gather(*tasks)
+                print(f"Completed processing {len(tasks)} batches")
             
-            preprocessed_chunks = [
-                response.content 
-                for batch_response in all_responses 
-                for response in batch_response
-            ]
-            
-            processed_content = "\n\n".join(preprocessed_chunks)
-            print(f"Completed processing. Final length: {len(processed_content)}")
-            
-            return [Document(
-                page_content=processed_content,
-                metadata={
-                    'url': result.url,
-                    'type': 'stackoverflow',
-                    'original_size': len(content),
-                    'processed_size': len(processed_content)
-                }
-            )]
+            return []  # Return empty as documents are processed via callback
             
         except Exception as e:
             logger.error(f"Error in extraction: {str(e)}", exc_info=True)

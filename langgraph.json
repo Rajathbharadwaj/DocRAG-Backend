@@ -1,7 +1,8 @@
 {
   "dockerfile_lines": [],
   "graphs": {
-    "chat": "./src/rag/retrieval_agent/graph.py:graph"
+    "chat": "./src/rag/retrieval_agent/graph.py:graph",
+    "research": "./src/rag/research_agent/graph.py:graph"
   },
   "env": ".env",
   "python_version": "3.12",

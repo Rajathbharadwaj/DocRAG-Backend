@@ -10,21 +10,18 @@ from langchain.prompts import PromptTemplate
 from rag.vectorstore_engine import VectorStoreEngine
 from datetime import datetime
 from langchain_openai import ChatOpenAI
+import traceback
 
 class WebIndexer:
     def __init__(
         self, 
         doc_name: str, 
-        max_depth: int = 2, 
-        max_links: Optional[int] = None,
-        backlink_threshold: float = 0.3,
+        max_links: Optional[int] = 25,
         use_serverless: bool = True,
         region: str = "us-east-1"
     ):
         self.doc_name = doc_name
-        self.max_depth = max_depth
         self.max_links = max_links
-        self.backlink_threshold = backlink_threshold
         self.content_type: Optional[ContentType] = None
         
         # Initialize VectorStore with doc_name
@@ -36,14 +33,13 @@ class WebIndexer:
         
         self.visited_urls: Set[str] = set()
         self.url_queue: Set[str] = set()
-        self.backlinks_map: Dict[str, Set[str]] = {}
         self.background_task: Optional[asyncio.Task] = None
         self.content_processor = ContentProcessor()
         self.logger = logging.getLogger(__name__)
         
         # Summary prompt template
         self.summary_prompt = PromptTemplate(
-            template="""Given the following document content, provide a concise summary in 2-3 sentences
+            template="""Given the following document content, provide a concise and accurate summary in 2-3 sentences
 Content:
 {content}
 
@@ -92,302 +88,182 @@ Summary:""",
         print("[DEBUG] Crawler initialized with config:", crawler_config)
         return self
 
-    async def process_initial_url(self, 
-                                url: str,
-                                content_type: ContentType,
-                                max_depth: Optional[int] = None,
-                                backlink_threshold: Optional[float] = None) -> Optional[PageContent]:
-        """Process the main URL and start background processing"""
+    def _clean_metadata(self, metadata: dict) -> dict:
+        """Clean metadata to ensure all values are valid for Pinecone"""
+        cleaned = {}
+        for key, value in metadata.items():
+            if value is not None:
+                # Convert empty strings to "unknown"
+                if isinstance(value, str) and not value.strip():
+                    cleaned[key] = "unknown"
+                # Convert empty lists to ["unknown"]
+                elif isinstance(value, list) and not value:
+                    cleaned[key] = ["unknown"]
+                else:
+                    cleaned[key] = value
+            else:
+                # Replace None values with appropriate defaults
+                if key in ['author', 'title', 'description']:
+                    cleaned[key] = "unknown"
+                elif key == 'keywords':
+                    cleaned[key] = ["unknown"]
+                elif key == 'last_modified':
+                    cleaned[key] = datetime.now().isoformat()
+                else:
+                    cleaned[key] = "not_specified"
+        return cleaned
+
+    async def process_initial_url(self, url: str, content_type: ContentType) -> Optional[PageContent]:
+        """Process the main URL immediately and queue background processing"""
         try:
-            if max_depth is not None:
-                self.max_depth = max_depth
-            if backlink_threshold is not None:
-                self.backlink_threshold = backlink_threshold
+            self.initial_url = url
+            self.content_type = content_type
             
-            # Crawl and process URL
+            # Immediately crawl and process the initial URL
             async with self.crawler as crawler:
                 crawl_result = await crawler.arun(
                     url=url,
                     clean_content=True,
                     bypass_cache=True
                 )
-            self.content_type = content_type
-            documents = await self.content_processor.process(crawl_result, self.content_type)
-            
+                
+            # Debug: Log the raw crawl result structure
+            self.logger.debug(f"Crawl result attributes: {dir(crawl_result)}")
+            self.logger.debug(f"Has links attribute: {hasattr(crawl_result, 'links')}")
+            if hasattr(crawl_result, 'links'):
+                self.logger.debug(f"Links type: {type(crawl_result.links)}")
+                self.logger.debug(f"Raw links data: {crawl_result.links}")
+                
+            # Process and store initial page content using helper
+            documents = await self._process_content(crawl_result)
             if documents:
-                # Process links from crawl_result
-                processed_links = set()
-                total_links = 0
+                self.visited_urls.add(url)
                 
-                # For logging clarity
-                max_links_display = f"{self.max_links}" if self.max_links is not None else "unlimited"
-                
+                # Collect unique links for background processing
+                unique_links = set()
                 if hasattr(crawl_result, 'links'):
                     if isinstance(crawl_result.links, dict):
-                        # Collect all links first
+                        initial_domain = urlparse(url).netloc
                         all_links = []
+                        
+                        # Add internal links first
                         if 'internal' in crawl_result.links:
-                            all_links.extend([
+                            internal_links = [
                                 link['href'] for link in crawl_result.links['internal']
                                 if isinstance(link, dict) and 'href' in link
-                            ])
+                                and urlparse(link['href']).netloc == initial_domain
+                            ]
+                            self.logger.debug(f"Found {len(internal_links)} internal links: {internal_links}")
+                            all_links.extend(internal_links)
+                        
+                        # Then add external links
                         if 'external' in crawl_result.links:
-                            all_links.extend([
+                            external_links = [
                                 link['href'] for link in crawl_result.links['external']
                                 if isinstance(link, dict) and 'href' in link
-                            ])
+                            ]
+                            self.logger.debug(f"Found {len(external_links)} external links: {external_links}")
+                            all_links.extend(external_links)
                         
-                        # Count total before limiting
-                        total_links = len(all_links)
-                        
-                        # Apply limit to combined set
-                        if self.max_links:
-                            all_links = all_links[:self.max_links]
-                        
-                        processed_links.update(all_links)
-                        
-                    elif isinstance(crawl_result.links, (list, set)):
-                        total_links = len(crawl_result.links)
-                        links_list = list(crawl_result.links)
-                        if self.max_links:
-                            links_list = links_list[:self.max_links]
-                        processed_links.update(links_list)
+                        # Take first max_links unique links
+                        unique_links = set(all_links[:self.max_links])
+                        self.logger.debug(f"Final unique links to process: {unique_links}")
                 
-                self.logger.info(f"Found {total_links} total links")
-                self.logger.info(f"Processing {len(processed_links)} links (limit: {max_links_display})")
+                self.logger.info(f"Initial page processed. Found {len(unique_links)} unique links")
                 
-                # Update tracking
-                self.visited_urls.add(url)
-                self.url_queue = processed_links
-                self.logger.info(f"Added {len(self.url_queue)} links to queue (limit: {max_links_display})")
-                
-                # Generate summary for the entire content
-                full_content = "\n\n".join(doc.page_content for doc in documents)
-                summary = await self._generate_summary(full_content)
-                
-                # Add enhanced metadata to documents
-                for doc in documents:
-                    # Clean metadata values - replace None with empty strings
-                    metadata = {
-                        'url': url,
-                        'content_type': content_type.value,
-                        'extraction_date': datetime.now().isoformat(),
-                        'document_summary': summary or "",
-                        'title': crawl_result.metadata.get('title', ''),
-                        'description': crawl_result.metadata.get('description', ''),
-                        'keywords': crawl_result.metadata.get('keywords', []),
-                        'author': crawl_result.metadata.get('author', ''),
-                        'last_modified': crawl_result.metadata.get('last_modified', ''),
-                        'source': url
-                    }
-                    
-                    # Clean any remaining None values
-                    cleaned_metadata = {
-                        k: (v if v is not None else "") 
-                        for k, v in metadata.items()
-                    }
-                    
-                    doc.metadata.update(cleaned_metadata)
-                
-                # Use the vector store
-                if self.vector_store:
-                    await self.vector_store.add_documents(documents)
-                
-                # Start background processing
-                self.background_task = asyncio.create_task(self._process_backlinks_async())
+                # Start background processing of unique links
+                if unique_links:
+                    self.url_queue = unique_links
+                    self.logger.info(f"Starting background processing for {len(unique_links)} links: {unique_links}")
+                    # Create and start the background task
+                    self.background_task = asyncio.create_task(self._process_background_links())
+                    # Add task done callback to handle completion
+                    self.background_task.add_done_callback(self._on_background_task_complete)
+                else:
+                    self.logger.warning("No links found for background processing")
                 
                 return PageContent(
                     url=url,
                     content_type=content_type,
                     documents=documents,
-                    links=processed_links,
+                    links=unique_links
                 )
             
             return None
             
         except Exception as e:
-            self.logger.error(f"Error processing URL {url}: {str(e)}")
+            self.logger.error(f"Error processing initial URL {url}: {str(e)}")
             raise
 
-    async def _process_backlinks_async(self):
-        """Process backlinks in background"""
+    def _on_background_task_complete(self, task):
+        """Callback for when background task completes"""
         try:
-            self.logger.info("Starting background backlinks processing")
-            current_depth = 1
+            # Check if task raised any exceptions
+            task.result()
+            self.logger.info("Background processing completed successfully")
+        except Exception as e:
+            self.logger.error(f"Background task failed: {str(e)}\nTraceback:\n{traceback.format_exc()}")
+
+    async def _process_background_links(self):
+        """Process queued links in background"""
+        try:
+            self.logger.info("Starting background link processing")
             batch_size = 5
             
-            while current_depth <= self.max_depth:
-                self.logger.info(f"Processing depth {current_depth}")
+            while self.url_queue:
+                batch_urls = set(list(self.url_queue)[:batch_size])
+                self.url_queue -= batch_urls
                 
-                urls_to_process = list(self.url_queue)
-                self.url_queue.clear()
+                self.logger.info(f"Processing batch of {len(batch_urls)} URLs. {len(self.url_queue)} remaining")
                 
-                if not urls_to_process:
-                    self.logger.info("No more URLs to process")
-                    break
+                async with self.crawler as crawler:
+                    for url in batch_urls:
+                        if url not in self.visited_urls:
+                            try:
+                                self.logger.debug(f"Crawling URL: {url}")
+                                crawl_result = await crawler.arun(
+                                    url=url,
+                                    clean_content=True,
+                                    bypass_cache=True
+                                )
+                                
+                                # Process using the helper method
+                                self.logger.debug(f"Processing content for URL: {url}")
+                                documents = await self._process_content(crawl_result)
+                                
+                                # Mark URL as visited regardless of document processing
+                                self.visited_urls.add(url)
+                                self.logger.debug(f"Processed URL {url}: Got {len(documents) if documents else 0} documents")
+                                
+                            except Exception as e:
+                                self.logger.error(
+                                    f"Error processing URL {url}: {str(e)}\n"
+                                    f"Content type: {self.content_type}\n"
+                                    f"Traceback:\n{traceback.format_exc()}"
+                                )
+                                continue
                 
-                # Calculate backlink threshold
-                total_pages = len(self.visited_urls)
-                if total_pages < 3:  # If we have very few pages, use simple threshold
-                    min_backlinks = 1
-                    self.logger.info(
-                        f"Not enough pages ({total_pages}) for meaningful threshold, "
-                        f"requiring minimum 1 backlink"
-                    )
-                else:
-                    # Use float comparison instead of rounding
-                    required_backlinks = total_pages * self.backlink_threshold
-                    self.logger.info(
-                        f"Requiring {required_backlinks:.1f} backlinks "
-                        f"(total pages: {total_pages}, threshold: {self.backlink_threshold})"
-                    )
-                
-                # Filter URLs based on backlink threshold
-                filtered_urls = []
-                for url in urls_to_process:
-                    backlink_count = len(self.backlinks_map.get(url, set()))
-                    if total_pages < 3:
-                        # Simple check for minimal pages
-                        if backlink_count >= min_backlinks:
-                            filtered_urls.append(url)
-                    else:
-                        # Float comparison for meaningful thresholds
-                        if backlink_count >= required_backlinks:
-                            filtered_urls.append(url)
-                            self.logger.debug(
-                                f"Accepting {url} - sufficient backlinks "
-                                f"({backlink_count} >= {required_backlinks:.1f})"
-                            )
-                        else:
-                            self.logger.debug(
-                                f"Skipping {url} - insufficient backlinks "
-                                f"({backlink_count} < {required_backlinks:.1f})"
-                            )
-                
-                # Apply max_links limit to filtered URLs
-                if self.max_links:
-                    original_count = len(filtered_urls)
-                    filtered_urls = filtered_urls[:self.max_links]
-                    self.logger.info(
-                        f"Applied max_links limit: {len(filtered_urls)} URLs "
-                        f"(reduced from {original_count})"
-                    )
-                
-                self.logger.info(
-                    f"Processing {len(filtered_urls)} URLs after filtering "
-                    f"(from initial {len(urls_to_process)})"
-                )
-                
-                # Process in batches
-                for i in range(0, len(filtered_urls), batch_size):
-                    batch = filtered_urls[i:i + batch_size]
-                    self.logger.info(f"Processing batch of {len(batch)} URLs")
-                    
-                    # Process URLs in parallel
-                    crawl_results = []
-                    process_tasks = []
-                    
-                    # Use a single crawler context for the batch
-                    async with self.crawler as crawler:
-                        for url in batch:
-                            if url not in self.visited_urls:
-                                try:
-                                    crawl_result = await crawler.arun(
-                                        url=url,
-                                        clean_content=True,
-                                        bypass_cache=True
-                                    )
-                                    
-                                    # Update backlinks for any new links found
-                                    if hasattr(crawl_result, 'links'):
-                                        new_links = []
-                                        if isinstance(crawl_result.links, dict):
-                                            for link_type in ['internal', 'external']:
-                                                if link_type in crawl_result.links:
-                                                    new_links.extend([
-                                                        link['href'] for link in crawl_result.links[link_type]
-                                                        if isinstance(link, dict) and 'href' in link
-                                                    ])
-                                        else:
-                                            new_links = list(crawl_result.links)
-                                        
-                                        # Update backlinks map
-                                        for link in new_links:
-                                            if link not in self.backlinks_map:
-                                                self.backlinks_map[link] = set()
-                                            self.backlinks_map[link].add(url)
-                                        
-                                    crawl_results.append((url, crawl_result))
-                                except Exception as e:
-                                    self.logger.error(f"Error crawling {url}: {str(e)}")
-                                    continue
-                    
-                    # Process documents and update vector store
-                    if crawl_results:
-                        all_documents = []
-                        for url, result in crawl_results:
-                            if result:
-                                docs = await self.content_processor.process(result, self.content_type)
-                                if docs:
-                                    for doc in docs:
-                                        metadata = {
-                                            'url': url,
-                                            'content_type': self.content_type.value,
-                                            'extraction_date': datetime.now().isoformat(),
-                                            'backlinks': len(self.backlinks_map.get(url, set())),
-                                            'title': result.metadata.get('title', ''),
-                                            'description': result.metadata.get('description', ''),
-                                            'keywords': result.metadata.get('keywords', []),
-                                            'author': result.metadata.get('author', ''),
-                                            'last_modified': result.metadata.get('last_modified', ''),
-                                            'source': url
-                                        }
-                                        doc.metadata.update(metadata)
-                                    all_documents.extend(docs)
-                                    self.visited_urls.add(url)
-                        
-                        if self.vector_store and all_documents:
-                            await self.vector_store.add_documents(all_documents)
-                    
-                    current_depth += 1
-                    self.logger.info(
-                        f"Completed depth {current_depth-1}, "
-                        f"processed {len(self.visited_urls)} URLs total"
-                    )
+                # Small delay between batches
+                await asyncio.sleep(1)
+            
+            self.logger.info("Background processing complete")
                 
         except Exception as e:
             self.logger.error(f"Error in background processing: {str(e)}")
             raise
 
-    async def _process_single_url(self, url: str):
-        """Process a single URL"""
-        try:
-            crawl_result = await self.crawler.crawl(url)
-            documents = await self.content_processor.process(crawl_result)
-            
-            if documents and self.vector_store:
-                await self.vector_store.add_documents(documents)
-                self.visited_urls.add(url)
-                self.url_queue.update(crawl_result.links)
-                
-                # Update backlinks
-                for link in crawl_result.links:
-                    if link not in self.backlinks_map:
-                        self.backlinks_map[link] = set()
-                    self.backlinks_map[link].add(url)
-            
-        except Exception as e:
-            self.logger.error(f"Error processing URL {url}: {str(e)}")
-
     async def get_indexing_status(self):
         """Get the current status of the indexing process"""
         try:
+            # Check if initial URL has been processed
+            initial_processed = len(self.visited_urls) > 0
+            
             # Get background task status
-            is_processing = (
-                (self.background_task and not self.background_task.done()) or 
-                len(self.visited_urls) == 0  # Only check if we've started processing
+            background_active = (
+                self.background_task and 
+                not self.background_task.done()
             )
-
+            
             # Check if background task failed
             if self.background_task and self.background_task.done():
                 try:
@@ -397,23 +273,30 @@ Summary:""",
                     return {
                         "status": "error",
                         "error": str(e),
+                        "initial_url_processed": initial_processed,
                         "urls_processed": len(self.visited_urls),
                         "urls_queued": len(self.url_queue),
                         "is_complete": True,
                         "background_task_active": False
                     }
 
-            self.logger.info(f"Status check - Processed: {len(self.visited_urls)}, Queued: {len(self.url_queue)}")
+            self.logger.info(
+                f"Status check - Initial processed: {initial_processed}, "
+                f"Total processed: {len(self.visited_urls)}, "
+                f"Queued: {len(self.url_queue)}"
+            )
             
             return {
-                "status": "processing" if is_processing else "complete",
+                "status": "processing" if background_active else "complete",
+                "initial_url_processed": initial_processed,
                 "urls_processed": len(self.visited_urls),
                 "urls_queued": len(self.url_queue),
-                "is_complete": not is_processing,
-                "background_task_active": bool(self.background_task and not self.background_task.done()),
+                "is_complete": not background_active,
+                "background_task_active": background_active,
                 "visited_urls": list(self.visited_urls),
                 "queued_urls": list(self.url_queue)
             }
+            
         except Exception as e:
             self.logger.error(f"Error getting status: {str(e)}")
             raise
@@ -438,3 +321,48 @@ Summary:""",
         except Exception as e:
             self.logger.warning(f"Error generating summary: {str(e)}")
             return ""
+
+    async def _process_content(self, crawl_result):
+        """Process content with appropriate extractor"""
+        try:
+            # List to collect all documents
+            all_documents = []
+            
+            async def batch_callback(documents):
+                """Callback to process document batches"""
+                # Add metadata to documents before storing
+                for doc in documents:
+                    metadata = {
+                        'url': crawl_result.url,
+                        'content_type': self.content_type.value,
+                        'extraction_date': datetime.now().isoformat(),
+                        'title': crawl_result.metadata.get('title', ''),
+                        'description': crawl_result.metadata.get('description', ''),
+                        'keywords': crawl_result.metadata.get('keywords', []),
+                        'author': crawl_result.metadata.get('author', ''),
+                        'last_modified': crawl_result.metadata.get('last_modified', ''),
+                        'source': crawl_result.url
+                    }
+                    # Clean metadata before updating
+                    doc.metadata.update(self._clean_metadata(metadata))
+                
+                # Store in vector store
+                await self.vector_store.add_documents(documents)
+                self.logger.info(f"Added batch of {len(documents)} documents to vector store")
+                
+                # Collect documents
+                all_documents.extend(documents)
+
+            # Process content with callback
+            await self.content_processor.process(
+                crawl_result, 
+                self.content_type,
+                batch_callback
+            )
+            
+            self.logger.debug(f"Total documents collected: {len(all_documents)}")
+            return all_documents
+
+        except Exception as e:
+            self.logger.error(f"Error in _process_content: {str(e)}\nTraceback:\n{traceback.format_exc()}")
+            return []
