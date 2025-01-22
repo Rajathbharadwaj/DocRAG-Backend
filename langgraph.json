@@ -1,8 +1,8 @@
 {
   "dockerfile_lines": [],
   "graphs": {
-    "chat": "./src/rag/retrieval_agent/graph.py:graph",
-    "research": "./src/rag/research_agent/graph.py:graph"
+    "chat": "./src/rag/chat_agent/backend/retrieval_graph/graph.py:graph",
+    "research": "./src/rag/chat_agent/backend/retrieval_graph/researcher_graph/graph.py:graph"
   },
   "env": ".env",
   "python_version": "3.12",
@@ -18,6 +18,9 @@
     "openai",
     "langchain",
     "langchain-community",
-    "langchain-openai"
+    "langchain-openai",
+    "langchain-pinecone",
+    "langchain-experimental"
+
   ]
 }

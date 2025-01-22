@@ -7,6 +7,8 @@ from langchain_core.documents import Document
 from langchain_pinecone import PineconeVectorStore
 from pinecone.grpc import PineconeGRPC
 import logging
+from langchain_core.retrievers import BaseRetriever
+from langchain_core.runnables import RunnableConfig
 from dotenv import load_dotenv
 
 # Add logging to check if .env is loaded
@@ -79,20 +81,18 @@ def make_pinecone_retriever(
         raise
 
 # Usage example
-async def retrieve_documents(
-    query: str,
-    index_name: str,
-    top_k: int = 4
-) -> List[Document]:
-    """Retrieve relevant documents for a query"""
-    try:
-        with make_pinecone_retriever(
-            index_name=index_name,
-            top_k=top_k
-        ) as retriever:
-            docs = await retriever.ainvoke(query)
-            return docs
-            
-    except Exception as e:
-        logger.error(f"Error retrieving documents: {str(e)}")
-        raise 
+@contextmanager
+def make_retriever(config: RunnableConfig) -> Iterator[BaseRetriever]:
+    """Create a retriever based on the current configuration"""
+    from rag.chat_agent.backend.retrieval_graph.configuration import AgentConfiguration
+    
+    configuration = AgentConfiguration.from_runnable_config(config)
+    embedding_model = make_embeddings()
+    
+    logger.info(f"Creating retriever for doc: {configuration.index_name}")
+    
+    with make_pinecone_retriever(
+        index_name=configuration.index_name,
+        embedding_model=embedding_model
+    ) as retriever:
+        yield retriever

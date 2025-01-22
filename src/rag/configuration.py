@@ -13,7 +13,7 @@ MODEL_NAME_TO_RESPONSE_MODEL = {
 }
 
 @dataclass(kw_only=True)
-class AgentConfiguration:
+class BaseConfiguration:
     """Configuration for the research agent.
     
     This class defines parameters for query generation, document retrieval,
@@ -81,7 +81,13 @@ class AgentConfiguration:
             "description": "Name of the Pinecone index to use for retrieval"
         },
     )
-    
+
+    region: str = field(
+        default="us-east-1",
+        metadata={
+            "description": "AWS region for Pinecone"
+        },
+    )
 
     # Prompts
     generate_queries_system_prompt: str = field(
@@ -114,4 +120,4 @@ Make queries specific and targeted.""",
         return cls(**{k: v for k, v in configurable.items() if k in _fields})
 
 
-T = TypeVar("T", bound=AgentConfiguration)
+T = TypeVar("T", bound=BaseConfiguration)

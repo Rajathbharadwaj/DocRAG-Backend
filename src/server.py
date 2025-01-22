@@ -1,9 +1,10 @@
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Response
 from pydantic import BaseModel, HttpUrl, Field
-from typing import Optional, List, Dict, cast
+from typing import Optional, List, Dict, cast, Any
 from model.types import ContentType
-from rag import retrieve_documents
+from rag import retriever
+from rag.chat_agent.backend.retrieval_graph.researcher_graph.graph import graph
 from config import settings, LLMProvider
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_anthropic import ChatAnthropic
@@ -11,12 +12,15 @@ from indexer.web_indexer import WebIndexer
 from sse_starlette.sse import EventSourceResponse
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
+from rag.chat_agent.backend.retrieval_graph.configuration import AgentConfiguration
 import logging
 import asyncio
 import json
+import traceback
+from langchain_core.documents import Document
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, BaseMessage
 
 logger = logging.getLogger(__name__)
-
 
 # Initialize FastAPI with lifespan
 app = FastAPI()
@@ -52,6 +56,7 @@ async def lifespan(app: FastAPI):
             await app.state.web_indexer.cleanup()
 
 app = FastAPI(lifespan=lifespan)
+
 class URLInput(BaseModel):
     url: HttpUrl
     content_type: Optional[ContentType] = None
@@ -62,6 +67,9 @@ class RAGRequest(BaseModel):
     question: str
     index_name: str
     top_k: int = 4
+    thread_id: str = "default"
+    user_id: str = "default"
+
     # thread_id: str = "default"
     # llm_provider: LLMProvider = LLMProvider.ANTHROPIC
     # return_sources: bool = False
@@ -85,7 +93,36 @@ def get_llm(provider: LLMProvider):
         )
     else:
         raise HTTPException(400, f"Unsupported LLM provider: {provider}")
-    
+
+def serialize_message(msg: BaseMessage) -> dict:
+    """Convert a LangChain message object to a JSON-serializable dictionary"""
+    return {
+        "content": msg.content,
+        "type": msg.__class__.__name__.lower(),
+        "additional_kwargs": msg.additional_kwargs
+    }
+
+def serialize_document(doc: Document) -> dict:
+    """Convert a Document object to a JSON-serializable dictionary"""
+    return {
+        "page_content": doc.page_content,
+        "metadata": doc.metadata,
+        "type": "document"
+    }
+
+def serialize_response(response: Any) -> Any:
+    """Recursively serialize response objects to JSON-serializable format"""
+    if isinstance(response, Document):
+        return serialize_document(response)
+    elif isinstance(response, (AIMessage, HumanMessage, SystemMessage)):
+        return serialize_message(response)
+    elif isinstance(response, list):
+        return [serialize_response(item) for item in response]
+    elif isinstance(response, dict):
+        return {k: serialize_response(v) for k, v in response.items()}
+    elif hasattr(response, "dict"):  # Handle Pydantic models
+        return serialize_response(response.dict())
+    return response
 
 @app.post("/index_url")
 async def index_url(url_input: URLInput, background_tasks: BackgroundTasks):
@@ -192,20 +229,35 @@ async def index_status_stream(doc_name: str):
 @app.post("/query")
 async def query(request: RAGRequest):
     """Query endpoint with content type filtering"""
-    try:
-        response = await retrieve_documents(
-            query=request.question,
-            index_name=request.index_name,
-            top_k=request.top_k
-        )
-        return response
+    async def generate_responses():
+        try:
+            config = {
+                "index_name": request.index_name,
+                "top_k": request.top_k,
+                "thread_id": request.thread_id,
+                "user_id": request.user_id,
+            }
             
-    except Exception as e:
-        logger.error(f"Error in query endpoint: {str(e)}")
-        raise HTTPException(
-            status_code=500, 
-            detail=f"Error processing query: {str(e)}"
-        )
+            from rag.chat_agent.backend.retrieval_graph.graph import graph
+            state = {"messages": [{"role": "user", "content": request.question}]}
+            async for response in graph.astream(state, config, stream_mode="values"):
+                # Serialize and convert response to JSON
+                serialized_response = serialize_response(response)
+                yield json.dumps(serialized_response) + "\n"
+                
+        except Exception as e:
+            logger.error(f"Error in query endpoint: {str(e)}")
+            logger.error(traceback.format_exc())
+            error_response = {
+                "error": str(e),
+                "detail": "Error processing query"
+            }
+            yield json.dumps(error_response) + "\n"
+    
+    return StreamingResponse(
+        generate_responses(),
+        media_type="application/x-ndjson"  # Use NDJSON format for streaming JSON
+    )
 
 @app.get("/indexing_status/{doc_name}")
 async def get_indexing_status(doc_name: str):
